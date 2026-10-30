@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="750" viewBox="0 0 1000 750">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1F33"/>
+      <stop offset="100%" stop-color="#122B47"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4285F4"/>
+      <stop offset="100%" stop-color="#34A853"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1000" height="750" fill="url(#bg)"/>
+  <rect width="1000" height="6" fill="url(#accent)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#1E3A5C" stroke-width="1" opacity="0.35">
+    <path d="M0 150 H1000 M0 300 H1000 M0 450 H1000 M0 600 H1000"/>
+    <path d="M200 0 V750 M400 0 V750 M600 0 V750 M800 0 V750"/>
+  </g>
+
+  <!-- terminal motif -->
+  <g transform="translate(80,470)">
+    <rect x="0" y="0" width="840" height="180" rx="14" fill="#081524" stroke="#2A4A70" stroke-width="2"/>
+    <circle cx="26" cy="26" r="7" fill="#FF5F56"/>
+    <circle cx="50" cy="26" r="7" fill="#FFBD2E"/>
+    <circle cx="74" cy="26" r="7" fill="#27C93F"/>
+    <text x="30" y="76" font-family="Menlo, Consolas, monospace" font-size="21" fill="#7EA6D8">$ ssh practice-web         →  Connection refused  (:22)</text>
+    <text x="30" y="112" font-family="Menlo, Consolas, monospace" font-size="21" fill="#7EA6D8">$ ssh -p 2222 practice-web →  hangs…            (:2222)</text>
+    <text x="30" y="148" font-family="Menlo, Consolas, monospace" font-size="21" fill="#4ADE80">gcloud compute connect-to-serial-port  →  service restored</text>
+  </g>
+
+  <text x="80" y="120" font-family="Helvetica, Arial, sans-serif" font-size="30" font-weight="600" fill="#8FB3D9" letter-spacing="2">GCP OPS LAB · CASE 01</text>
+  <text x="80" y="215" font-family="Helvetica, Arial, sans-serif" font-size="76" font-weight="800" fill="#FFFFFF">SSH Lockout Rescue</text>
+  <text x="80" y="275" font-family="Helvetica, Arial, sans-serif" font-size="34" font-weight="400" fill="#C7DCF2">via GCP Serial Console</text>
+
+  <g font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#8FB3D9">
+    <rect x="80" y="325" width="290" height="46" rx="23" fill="#16324F" stroke="#2A4A70"/>
+    <text x="106" y="356">e2-micro · Debian 12</text>
+
+    <rect x="390" y="325" width="330" height="46" rx="23" fill="#16324F" stroke="#2A4A70"/>
+    <text x="416" y="356">VPC firewall × guest ufw</text>
+
+    <rect x="740" y="325" width="180" height="46" rx="23" fill="#16324F" stroke="#2A4A70"/>
+    <text x="766" y="356">sshd config</text>
+  </g>
+
+  <text x="80" y="705" font-family="Helvetica, Arial, sans-serif" font-size="22" fill="#5F7FA6">lukecheng-csu · gcp-ops-labs</text>
+</svg>

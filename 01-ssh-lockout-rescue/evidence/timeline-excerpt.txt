@@ -1,0 +1,52 @@
+# Break-fix timeline — practice-web (GCP, Debian 12)
+# Sanitized: my own public IP replaced with [my-ip]. Third-party scanner IPs kept as-is.
+# All times UTC. Source: journalctl --since "2026-10-30 01:40" --until "2026-10-30 03:10"
+
+# --- Hardening (baseline) ---
+Oct 30 01:40:31 practice-web sudo[3146]: lukecheng : TTY=pts/0 ; USER=root ; COMMAND=/usr/bin/sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# --- Background noise: public IP attracts scanners immediately ---
+Oct 30 01:41:23 practice-web kernel: [UFW BLOCK] ... SRC=82.147.85.103 DST=10.128.0.3 ... PROTO=TCP ... DPT=3389 ...
+Oct 30 01:44:00 practice-web sshd[3221]: Invalid user user from 80.94.95.115 port 34130
+
+# --- Baseline: sshd on 22 ---
+Oct 30 01:51:21 practice-web sshd[3423]: Server listening on 0.0.0.0 port 22.
+
+# --- THE BREAK: Port 2222 added to sshd_config ---
+Oct 30 01:56:51 practice-web sudo[3578]: lukecheng : TTY=pts/0 ; USER=root ; COMMAND=/usr/bin/vi /etc/ssh/sshd_config
+Oct 30 01:57:06 practice-web sshd[3587]: Invalid user telecomadmin from 138.226.239.233 port 31928
+Oct 30 01:57:50 practice-web systemd[1]: Stopping ssh.service - OpenBSD Secure Shell server...
+Oct 30 01:57:51 practice-web sshd[3613]: Server listening on 0.0.0.0 port 2222.
+Oct 30 01:57:51 practice-web sshd[3613]: Server listening on :: port 2222.
+
+# --- Locked out: last SSH session drops; laptop sees refused on 22 / hang on 2222 ---
+Oct 30 01:58:24 practice-web sshd[2755]: Disconnected from user lukecheng [my-ip] port 23329
+
+# --- Meanwhile the box keeps being scanned ---
+Oct 30 02:12:55 practice-web kernel: [UFW BLOCK] ... SRC=79.124.40.178 DST=10.128.0.3 ... DPT=3389 ...
+Oct 30 02:28:40 practice-web kernel: [UFW BLOCK] ... SRC=62.210.114.99 DST=10.128.0.3 ... DPT=3389 ...
+Oct 30 02:46:58 practice-web kernel: [UFW BLOCK] ... SRC=165.22.51.61 DST=10.128.0.3 ... DPT=3389 ...
+Oct 30 03:06:23 practice-web kernel: [UFW BLOCK] ... SRC=35.210.106.159 DST=10.128.0.3 ... DPT=3389 ...
+Oct 30 03:06:24 practice-web kernel: [UFW BLOCK] ... SRC=35.210.106.159 DST=10.128.0.3 ... DPT=3389 ...
+
+# --- Recovery path: serial console session (ttyS0) ---
+Oct 30 02:25:15 practice-web systemd-logind[386]: New session 8 of user lukecheng.
+Oct 30 02:51:16 practice-web sudo[4952]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/sbin/sshd -T
+Oct 30 02:51:23 practice-web sudo[4959]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/grep -nE ^#?Port /etc/ssh/sshd_config
+Oct 30 03:00:55 practice-web sudo[5171]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/grep -rn -i port /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+
+# --- First edit attempt: restart still binds 2222 — verification catches it ---
+Oct 30 03:02:50 practice-web sudo[5216]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/vi /etc/ssh/sshd_config
+Oct 30 03:03:19 practice-web sudo[5230]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/sbin/sshd -t
+Oct 30 03:03:30 practice-web sshd[5242]: Server listening on 0.0.0.0 port 2222.
+Oct 30 03:03:41 practice-web sudo[5251]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/systemctl status sshd
+
+# --- Second pass: grep again, edit again, validate, restart ---
+Oct 30 03:06:06 practice-web sudo[5303]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/grep -rn -i port /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+Oct 30 03:07:30 practice-web sudo[5340]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/grep -rn -i port /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+Oct 30 03:08:17 practice-web sudo[5364]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/bin/vi /etc/ssh/sshd_config
+Oct 30 03:08:40 practice-web sudo[5379]: lukecheng : TTY=ttyS0 ; USER=root ; COMMAND=/usr/sbin/sshd -t
+
+# --- FIXED: back on 22, SSH session restored ---
+Oct 30 03:08:47 practice-web sshd[5390]: Server listening on 0.0.0.0 port 22.
+Oct 30 03:09:26 practice-web systemd-logind[386]: New session 9 of user lukecheng.
