@@ -128,7 +128,11 @@ gcloud compute firewall-rules delete allow-ssh-2222
 ## Evidence
 
 - [evidence/timeline-excerpt.txt](evidence/timeline-excerpt.txt) — sanitized journal excerpt (emails and my own connecting IP redacted; third-party scanner IPs kept as-is)
-- Screenshots: `screenshots/mac-connection-refused.png`, `screenshots/serial-console-session.png` *(to be added)*
+- Screenshots:
+
+![Connection refused on port 22](screenshots/mac-connection-refused.png)
+
+![Serial console recovery session](screenshots/serial-console-session.png)
 
 ## Cost notes
 
