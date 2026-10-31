@@ -125,6 +125,55 @@ gcloud compute firewall-rules delete allow-ssh-2222
 - Validate with `sshd -t` before `systemctl restart ssh`; a syntax error in the config turns a small change into a lockout.
 - When SSH misbehaves, separate the two questions: "is sshd listening?" (`sshd -T`, `systemctl status`) and "is the packet allowed through?" (`ufw status`, VPC rules, `[UFW BLOCK]` lines).
 
+## Addendum: re-exposing port 2222 the right way (2026-10-31)
+
+After the incident I ran the same change again — this time in the correct order. sshd now listens on **both** 22 and 2222, and both are reachable.
+
+**The safe change order:**
+
+1. **Open the outer layers first** — harmless on their own, nothing listens on the port yet:
+   - VPC: `gcloud compute firewall-rules create allow-ssh-2222 --allow=tcp:2222 --target-tags=http-server`
+   - Guest: `sudo ufw allow 2222/tcp`
+2. **Then let sshd listen — keeping 22 alive as a fallback:**
+   ```bash
+   sudo sed -i 's/^#Port 22/Port 22/' /etc/ssh/sshd_config   # uncomment the default
+   echo 'Port 2222' | sudo tee -a /etc/ssh/sshd_config          # add, do not replace
+   sudo sshd -t
+   sudo systemctl restart ssh
+   sudo sshd -T | grep -i '^port'    # port 22 + port 2222
+   sudo ss -tlnp | grep sshd
+   ```
+   `Port` is one of the few directives where repeating it is meaningful — sshd listens on **every** listed port.
+3. **Verify from a second terminal** while the first session stays open:
+   ```bash
+   ssh -p 2222 <user>@<public-ip>
+   ```
+4. Remove the old path only after the new one is proven.
+
+**Why this cannot lock me out, while the original attempt did:**
+
+| | Original (locked out) | This time (safe) |
+|---|---|---|
+| Firewalls opened first | ✗ | ✓ both layers |
+| Port 22 kept as fallback | ✗ replaced | ✓ still listening |
+| Verification | after restart, no SSH | second terminal, first session open |
+| Rollback path | untested serial console | tested serial console |
+
+**Result:**
+
+```
+$ sudo sshd -T | grep -i '^port'
+port 22
+port 2222
+
+$ ssh -p 2222 lukecheng@<public-ip>   # connects (explicit key and via ssh-agent)
+$ curl -I http://localhost
+HTTP/1.1 200 OK
+Server: nginx/1.22.1
+```
+
+And the reminder stands: moving SSH to 2222 is **not** a security measure — scans arrive within minutes whether it is 22 or 2222 (see the `[UFW BLOCK]` lines above).
+
 ## Evidence
 
 - [evidence/timeline-excerpt.txt](evidence/timeline-excerpt.txt) — sanitized journal excerpt (emails and my own connecting IP redacted; third-party scanner IPs kept as-is)
@@ -136,4 +185,4 @@ gcloud compute firewall-rules delete allow-ssh-2222
 
 ## Cost notes
 
-e2-micro in `us-central1` — covered by the Always Free tier. Instance torn down after the lab.
+e2-micro in `us-central1` — covered by the Always Free tier. Resources are removed between lab sessions.
