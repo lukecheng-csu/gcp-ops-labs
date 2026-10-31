@@ -1,0 +1,9 @@
+# 全局配置（可选）：Let's Encrypt 证书联系邮箱，Caddy 有默认值，建议填自己的
+# {
+# 	email you@example.com
+# }
+
+# 换成你的真实子域名（需先在 DNS 供应商加 A 记录指向 VM 外网 IP）
+n8n-gcp.cloudworkflowdone.com {
+	reverse_proxy n8n:5678
+}

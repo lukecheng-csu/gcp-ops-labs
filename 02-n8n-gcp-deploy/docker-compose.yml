@@ -1,0 +1,61 @@
+# n8n + PostgreSQL + Caddy — GCP 练习 2
+# 所有持久化数据落在附加盘 /mnt/n8n-data（VM 重建不丢）
+name: n8n
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - /mnt/n8n-data/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - N8N_EDITOR_BASE_URL=https://${N8N_HOST}
+      - WEBHOOK_URL=https://${N8N_HOST}/
+      - N8N_SECURE_COOKIE=true
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_PROXY_HOPS=2          # Cloudflare + Caddy 两层代理；缺了会报 ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - GENERIC_TIMEZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+    ports:
+      - "127.0.0.1:5678:5678"   # 只绑回环，外部一律走 Caddy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /mnt/n8n-data/n8n:/home/node/.n8n
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - /mnt/n8n-data/caddy-data:/data
+      - /mnt/n8n-data/caddy-config:/config
+    depends_on:
+      - n8n
