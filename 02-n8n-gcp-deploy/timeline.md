@@ -20,6 +20,7 @@ Sanitized log. Public IPs, passwords, keys and project IDs removed. Times marked
 | ≈12:20 | Restored the correct password in `.env`, `docker compose up -d`. Recovery surfaced `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` (express-rate-limit, two proxies, `N8N_PROXY_HOPS=0`). |
 | ≈12:25 | Set `N8N_PROXY_HOPS=2`; logs clean, editor and webhook both healthy. |
 | ≈12:45 | Second break-fix drill (storage layer): replaced the PostgreSQL bind mount with `volumes: []`, `down` + `up` → new anonymous volume, empty DB, n8n asked for owner setup again. Repeated down/up → a second empty DB. `docker volume ls -f dangling=true` showed the orphans. Restored the bind mount, recreated containers — original account and workflows back. Data on `/mnt/n8n-data/pgdata` was untouched throughout. |
+| ≈[TBD] | Third break-fix drill (TLS layer): added `tls internal` to the Caddyfile site block → Caddy self-signed instead of Let's Encrypt. Direct `curl --resolve` against origin: `SSL certificate problem: self-signed certificate`; `openssl s_client` issuer flipped `Let's Encrypt` → `Caddy Local Authority`; Cloudflare (Full strict) returned **526**. Rolled back with `cp Caddyfile.bak Caddyfile` + `caddy reload`; original cert restored instantly from `/mnt/n8n-data/caddy-data`. |
 
 ## Lessons
 

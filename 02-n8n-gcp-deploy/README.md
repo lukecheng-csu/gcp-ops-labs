@@ -106,6 +106,8 @@ curl -skI --resolve n8n-gcp.cloudworkflowdone.com:443:<VM_IP> \
 
 Also worth knowing: the n8n registry (`docker.n8n.io`) has no CDN and took **634 s** to pull a single image; `docker.io/n8nio/n8n` is the faster equivalent.
 
+**8. Break-fix drill: a TLS misconfiguration that took HTTPS down.** I changed the Caddyfile site block to `tls internal`, which makes Caddy act as its own CA and self-sign instead of asking Let's Encrypt. A direct `curl --resolve` against the origin immediately returned `SSL certificate problem: self-signed certificate`, and `openssl s_client` showed the issuer flip from `Let's Encrypt` to `Caddy Local Authority` — the single most diagnostic line, because it localizes the fault to TLS and rules out DNS, network, and the backend. Through Cloudflare (Full strict) the same fault surfaced as an HTTP 526. Rolling back was `cp Caddyfile.bak Caddyfile` + `caddy reload`, and the original Let's Encrypt certificate was served again instantly — it had never left `/mnt/n8n-data/caddy-data`. The lesson: Caddy's certificates are *state* on the data disk, while the Caddyfile is just *config*; breaking config never destroys state, which is what makes rollback safe. Full walkthrough in [`caddy-tls-breakfix.md`](caddy-tls-breakfix.md).
+
 ## Cost notes
 
 Everything here fits in GCP's Always Free tier: one `e2-micro` in `us-central1`, total disk 30 GB (20 GB boot + 10 GB data — exactly at the free ceiling), Caddy and Let's Encrypt cost nothing, Cloudflare free plan. Idle cost ≈ $0. The VM stays within these limits by design; no premium services were used.
