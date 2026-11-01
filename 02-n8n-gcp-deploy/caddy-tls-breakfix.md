@@ -53,6 +53,28 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 `tls internal` tells Caddy: *don't go to Let's Encrypt — be your own CA and self-sign.* That certificate is trusted by no client on the internet.
 
+## The trap that came first: `sed -i` vs the bind mount
+
+On the real run, the first break attempt did **nothing** — `curl` still said `verify ok`, the issuer was still Let's Encrypt, and the Caddy log said `config is unchanged`. The host's Caddyfile *did* have `tls internal` (`cat -A` proved it), so why didn't the container see it?
+
+Because `sed -i` does not edit a file in place — it writes a **new temp file and renames over the original**, giving the host file a **new inode**. But `./Caddyfile:/etc/caddy/Caddyfile` is a **single-file bind mount**, and Docker pins it to the inode that existed at container start. The host now points at the new inode; the container still points at the old one. One path, two different files.
+
+```bash
+# host: shows tls internal (new inode)
+cat Caddyfile
+
+# container: still the stale file (old inode)
+docker compose exec caddy cat /etc/caddy/Caddyfile
+```
+
+Fix: either edit in place (`nano`, or `cat > Caddyfile` — both truncate the existing inode), or restart the container so the bind mount re-binds:
+
+```bash
+docker compose restart caddy
+```
+
+**Takeaway: when a config change "doesn't take," the log line `config is unchanged` tells you the container never saw the new file — don't trust the host-side `cat` alone.**
+
 ## What broke — symptoms at each layer
 
 ### 1. Client (curl bypassing Cloudflare)
@@ -107,13 +129,15 @@ Everything narrows to `tls internal`. Not DNS, not the network, not the backend 
 ## Rollback
 
 ```bash
-cp Caddyfile.bak Caddyfile
-docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+cp Caddyfile.bak Caddyfile   # in-place write (truncates the same inode) — no re-bind needed
+docker compose restart caddy # re-reads the reverted Caddyfile
 ```
+
+`cp` to an existing destination truncates the same inode (unlike `sed -i`'s rename), so the container sees the reverted content immediately; the restart loads it. Expect a brief **521** while Caddy drops port 443 and comes back — that's just the restart window, not a regression.
 
 Verify the issuer is back to Let's Encrypt and the endpoint returns 200 again (repeat the two baseline commands).
 
-Why this is instant and lossless: the Let's Encrypt certificate was never deleted — it lived on `/mnt/n8n-data/caddy-data` the whole time. Editing the Caddyfile only changed **which** certificate Caddy serves, not **what it has stored**. Config and state are separate, and that separation is what makes rollback safe.
+Why this is instant and lossless: the Let's Encrypt certificate was never deleted — it lived on `/mnt/n8n-data/caddy-data` the whole time (the recovered run served the exact same `cert_hash 2161b84d…`). Editing the Caddyfile only changed **which** certificate Caddy serves, not **what it has stored**. Config and state are separate, and that separation is what makes rollback safe.
 
 ## Optional deepening: make ACME issuance fail outright
 
@@ -138,3 +162,5 @@ Reload and watch `docker compose logs caddy`: issuance now fails (or obtains a *
 2. **A CDN can both hide and expose a TLS fault.** Full (strict) surfaces a bad origin cert as `526`; Full (non-strict) hides it. Always test the origin directly with `--resolve`.
 3. **Config vs state.** Caddy's certificates are *state* (on the data disk); the Caddyfile is *config*. Breaking config never destroys state — which is why rollback is safe and fast.
 4. **`tls internal` is a footgun with a purpose.** Fine for local/offline HTTPS; pointed at a public endpoint it silently downgrades trust.
+5. **A single-file bind mount pins an inode.** `sed -i` (rename) detaches it; edit in place or restart. The log line `config is unchanged` is the tell.
+6. **Caddy manages local certs like public ones.** The internal cert has a ~12 h lifetime and auto-renews (`issuer: "local"`) on the same maintenance loop — "self-signed" doesn't mean "manual".
