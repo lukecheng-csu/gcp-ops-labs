@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>练习 3 实操手册 · 静态站 + GCS + LB + CDN</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --text:#1f2328; --muted:#656d76;
+    --border:#e1e4e8; --accent:#2563eb; --green:#16a34a;
+    --amber:#d97706; --red:#dc2626; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:0 16px 80px; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.75; font-size:15px;
+  }
+  .wrap{max-width:920px;margin:0 auto;}
+  header{padding:48px 0 28px;border-bottom:1px solid var(--border);margin-bottom:32px;}
+  h1{font-size:30px;line-height:1.3;margin:0 0 10px;letter-spacing:-.5px;}
+  .sub{color:var(--muted);margin:0 0 18px;font-size:14px;}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;}
+  .badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--muted);}
+  .badge.ok{color:var(--green);border-color:#c9e9d3;background:#f0fbf3;}
+  .badge.todo{color:var(--amber);border-color:#f5e0bd;background:#fffaf0;}
+
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+  h3{font-size:17px;margin:26px 0 10px;}
+  p{margin:10px 0;}
+  ul,ol{margin:10px 0;padding-left:22px;}
+  li{margin:5px 0;}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:#eef1f4;padding:2px 5px;border-radius:4px;}
+  pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:12px 0;}
+  pre code{background:none;padding:0;font-size:13px;line-height:1.65;display:block;white-space:pre;}
+  .c-comment{color:#6a737d;}
+  .c-out{color:#0a5c2b;}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;background:#fff;border-radius:8px;overflow:hidden;}
+  th,td{border:1px solid var(--border);padding:9px 11px;text-align:left;vertical-align:top;}
+  th{background:#f2f4f7;font-weight:600;font-size:13px;}
+  tr:nth-child(even) td{background:#fcfcfd;}
+
+  .note,.pitfall,.tip{border-radius:8px;padding:14px 16px;margin:16px 0;font-size:14px;}
+  .note{background:#f3f7ff;border-left:4px solid var(--accent);}
+  .tip{background:#f0fbf3;border-left:4px solid var(--green);}
+  .pitfall{background:#fff8ef;border-left:4px solid var(--amber);}
+  .pitfall strong{color:#b45309;}
+  .note strong{color:var(--accent);}
+  .tip strong{color:#15803d;}
+
+  .kicker{display:inline-block;font-size:12px;font-weight:600;letter-spacing:.5px;color:var(--accent);margin-bottom:2px;}
+
+  /* architecture diagram */
+  .arch{background:#fff;border:1px solid var(--border);border-radius:10px;padding:26px 20px;margin:18px 0;}
+  .arch-row{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;}
+  .box{background:#f9fafb;border:1px solid #d8dde3;border-radius:8px;padding:10px 14px;font-size:13px;text-align:center;min-width:120px;}
+  .box small{display:block;color:var(--muted);font-size:11px;margin-top:2px;}
+  .box.hl{background:#eef4ff;border-color:#b9cffb;}
+  .arrow{color:#9aa4ae;font-size:16px;}
+  .arch-row.down{margin-top:6px;}
+  .arch-col{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:6px;}
+
+  nav.toc{background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin-bottom:8px;}
+  nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:32px;}
+  nav.toc li{margin:4px 0;font-size:14px;}
+  nav.toc a{color:var(--text);text-decoration:none;}
+  nav.toc a:hover{color:var(--accent);text-decoration:underline;}
+  @media(max-width:640px){nav.toc ol{columns:1;}}
+
+  .step{background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin:16px 0;}
+  .step h3{margin-top:0;}
+  .step .why{color:var(--muted);font-size:13.5px;margin:0 0 10px;}
+
+  .chk{list-style:none;padding-left:0;}
+  .chk li{padding-left:26px;position:relative;}
+  .chk li::before{content:"□";position:absolute;left:4px;color:#9aa4ae;font-size:15px;}
+  .chk li.done::before{content:"✓";color:var(--green);font-weight:700;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">GCP OPS LABS · 练习 3</div>
+  <h1>静态站：Cloud Storage + HTTPS LB + Cloud CDN</h1>
+  <p class="sub">2026-11-01 实操记录 · 从建 bucket 到转发规则、浏览器访问全流程 · 明天照着重走一遍</p>
+  <div class="badges">
+    <span class="badge ok">✓ 第一步 建 bucket</span>
+    <span class="badge ok">✓ 第二步 LB 骨架</span>
+    <span class="badge ok">✓ 403 权限修复</span>
+    <span class="badge ok">✓ 根路径 301</span>
+    <span class="badge todo">○ 第三步 Cloud DNS</span>
+    <span class="badge todo">○ 第四步 HTTPS 证书</span>
+    <span class="badge todo">○ 第五步 Cloud CDN</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <ol>
+    <li><a href="#arch">整体架构</a></li>
+    <li><a href="#pre">前置条件</a></li>
+    <li><a href="#s1">第一步：建 bucket + 上传内容</a></li>
+    <li><a href="#s2">第二步：建 LB 骨架 + HTTP 前台</a></li>
+    <li><a href="#pitfalls">今天踩的 4 个坑</a></li>
+    <li><a href="#verify">完整验证清单</a></li>
+    <li><a href="#tomorrow">明天要做：DNS / HTTPS / CDN</a></li>
+    <li><a href="#cleanup">收尾清理（防扣费）</a></li>
+    <li><a href="#cheat">命令速查（一次性复制）</a></li>
+  </ol>
+</nav>
+
+<h2 id="arch">整体架构</h2>
+<p>用 4 个 GCP 服务拼一个「https 可访问、图片走 CDN 缓存」的静态站：</p>
+
+<div class="arch">
+  <div class="arch-row">
+    <div class="box">用户浏览器</div>
+    <div class="arrow">→</div>
+    <div class="box hl">外部 HTTP(S) LB<small>静态 IP · Google 托管证书</small></div>
+    <div class="arrow">→</div>
+    <div class="box">backend bucket<small>URL map 路由</small></div>
+    <div class="arrow">→</div>
+    <div class="box">Cloud Storage<small>index.html / img/test.jpg</small></div>
+  </div>
+  <div class="arch-row down">
+    <div class="arrow">↳</div>
+    <div class="box" style="border-style:dashed;">Cloud CDN<small>缓存静态文件，二次访问命中</small></div>
+    <div class="box" style="border-style:dashed;">Cloud DNS<small>static.cloudworkflowdone.com</small></div>
+  </div>
+</div>
+
+<table>
+  <tr><th>服务</th><th>今天的角色</th><th>成本</th></tr>
+  <tr><td>Cloud Storage</td><td>存 index.html + 图片</td><td>5GB 免费额度内</td></tr>
+  <tr><td>Load Balancer</td><td>对外入口、绑 IP、转发规则</td><td>不在 Always Free，几美分/天</td></tr>
+  <tr><td>Cloud CDN</td><td>缓存静态文件（明天开）</td><td>流量极低，可忽略</td></tr>
+  <tr><td>Cloud DNS</td><td>托管子域（明天做）</td><td>不在 Always Free，几美分/月</td></tr>
+</table>
+
+<h2 id="pre">前置条件</h2>
+<p>今天在腾讯云跳板机（Rocky Linux）上装好了 gcloud，这三件事必须都过：</p>
+
+<pre><code><span class="c-comment"># 1) gcloud 能跑（PATH 已配好，见坑 1）</span>
+gcloud --version
+
+<span class="c-comment"># 2) 已登录（跳板机无浏览器，必须用 --no-browser）</span>
+gcloud auth login --no-browser
+
+<span class="c-comment"># 3) 项目已锁定</span>
+gcloud config set project lukechengtest
+gcloud config list --format='value(core.project)'   <span class="c-out"># lukechengtest</span></code></pre>
+
+<div class="note"><strong>关键变量</strong>（后面命令都会用到）：项目 <code>lukechengtest</code>、bucket <code>lukecheng-static-site</code>、域名 <code>static.cloudworkflowdone.com</code>、LB IP <code>136.82.37.171</code>。</div>
+
+<h2 id="s1">第一步：建 bucket + 上传内容</h2>
+
+<div class="step">
+  <h3>1.1 建 bucket</h3>
+  <p class="why">全局唯一名；us-central1 吃免费额度；uniform 统一权限模型。</p>
+<pre><code>gcloud storage buckets create gs://lukecheng-static-site \
+  --location=us-central1 \
+  --uniform-bucket-level-access</code></pre>
+</div>
+
+<div class="step">
+  <h3>1.2 准备本地静态内容</h3>
+  <p class="why">目录结构要和 index.html 里的引用路径严格一致，否则页面破图。</p>
+<pre><code>mkdir -p ~/static-site/img
+cd ~/static-site</code></pre>
+
+<p>写 <code>index.html</code>（注意 <code>src="/img/test.jpg"</code> 要和后面上传的路径一字不差）：</p>
+<pre><code>&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;title&gt;Static Site on GCP&lt;/title&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;h1&gt;Hello from Cloud Storage + Cloud CDN&lt;/h1&gt;
+  &lt;p&gt;Served from a Cloud Storage bucket through an HTTPS Load Balancer.&lt;/p&gt;
+  &lt;img src="/img/test.jpg" width="320" alt="test image"&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+
+<p>放一张测试图到 <code>img/test.jpg</code>（内容无所谓，就是给 CDN 缓存验证用的）。</p>
+</div>
+
+<div class="step">
+  <h3>1.3 上传并验证</h3>
+<pre><code>gcloud storage cp -r . gs://lukecheng-static-site/
+
+gcloud storage ls -r gs://lukecheng-static-site/</code></pre>
+<p><strong>预期输出</strong>（只有这两个文件就对了）：</p>
+<pre><code><span class="c-out">gs://lukecheng-static-site/index.html
+gs://lukecheng-static-site/img/test.jpg</span></code></pre>
+</div>
+
+<div class="pitfall">
+  <strong>坑：macOS 的 .DS_Store 会被一起传上去</strong><br>
+  <code>cp -r .</code> 会把 Finder 自动生成的隐藏文件也带上。删掉它，或上传时排除：
+  <pre><code>gcloud storage rm gs://lukecheng-static-site/.DS_Store
+<span class="c-comment"># 或者上传时就排除</span>
+gcloud storage cp -r . gs://lukecheng-static-site/ --exclude='.DS_Store'</code></pre>
+</div>
+
+<h2 id="s2">第二步：建 LB 骨架 + HTTP 前台</h2>
+
+<div class="note">
+  <strong>为什么先只做 HTTP(80)，不做 HTTPS？</strong><br>
+  HTTPS 需要证书，而 Google 托管证书必须靠 DNS 验证；DNS 委派是第三步。现在硬建 443，证书会一直卡在 <code>PROVISIONING</code>，看起来像坏了。<br>
+  所以顺序是：<strong>先建 80 把 LB → bucket 链路跑通，等 DNS 通了再补 443 + 证书。</strong>每步都有可验证的结果。
+</div>
+
+<p>五条命令，一条一个组件，顺序不能乱（后面的引用前面的）：</p>
+
+<div class="step">
+  <h3>2.1 预留全局静态 IP</h3>
+  <p class="why">LB 的固定入口，第三步 DNS 要指向它。</p>
+<pre><code>PROJECT=lukechengtest
+
+gcloud compute addresses create static-site-ip --global --project=$PROJECT
+
+<span class="c-comment"># 记下这个 IP</span>
+gcloud compute addresses describe static-site-ip --global \
+  --project=$PROJECT --format='value(address)'
+<span class="c-out"># 136.82.37.171</span></code></pre>
+</div>
+
+<div class="step">
+  <h3>2.2 建 backend bucket（把 GCS 挂成 LB 后端）</h3>
+  <p class="why">这一步只是「建立关系」，真正的读权限另外配（见坑 3）。</p>
+<pre><code>gcloud compute backend-buckets create static-site-backend \
+  --gcs-bucket-name=lukecheng-static-site \
+  --project=$PROJECT</code></pre>
+</div>
+
+<div class="step">
+  <h3>2.3 建 URL map（决定请求怎么路由）</h3>
+  <p class="why">默认所有请求都打到 backend bucket；后面根路径的 301 也在这里加。</p>
+<pre><code>gcloud compute url-maps create static-site-urlmap \
+  --default-backend-bucket=static-site-backend \
+  --project=$PROJECT</code></pre>
+</div>
+
+<div class="step">
+  <h3>2.4 建 HTTP target proxy</h3>
+  <p class="why">代理层，把 forwarding rule 收进来的流量交给 URL map。</p>
+<pre><code>gcloud compute target-http-proxies create static-site-http-proxy \
+  --url-map=static-site-urlmap \
+  --project=$PROJECT</code></pre>
+</div>
+
+<div class="step">
+  <h3>2.5 建 80 端口 forwarding rule（真正对外）</h3>
+  <p class="why">把静态 IP 的 80 端口接到 proxy 上。到这一步 LB 才真正存在。</p>
+<pre><code>gcloud compute forwarding-rules create static-site-http-rule \
+  --address=static-site-ip \
+  --global \
+  --target-http-proxy=static-site-http-proxy \
+  --ports=80 \
+  --project=$PROJECT</code></pre>
+</div>
+
+<h3>2.6 用 IP 验证链路</h3>
+<p>LB 配置下发要 <strong>1~2 分钟</strong>，别建完立刻测。</p>
+<pre><code>IP=$(gcloud compute addresses describe static-site-ip --global --format='value(address)')
+
+curl -sI http://$IP/index.html
+curl -sI http://$IP/img/test.jpg</code></pre>
+
+<table>
+  <tr><th>结果</th><th>说明</th><th>去哪看</th></tr>
+  <tr><td><code>200</code></td><td>链路通，权限也对</td><td>可以直接下一步</td></tr>
+  <tr><td><code>403 Forbidden</code> + <code>Server: UploadServer</code></td><td>LB 到了 GCS，但 bucket 私有拒绝匿名读</td><td>坑 3</td></tr>
+  <tr><td><code>404</code> + Google 样式错误页</td><td>LB 活着，但 bucket 里没这个对象</td><td>查文件名/路径</td></tr>
+  <tr><td><code>Connection timed out</code></td><td>包没到 LB</td><td>等下发 / 换网络出口</td></tr>
+</table>
+
+<h2 id="pitfalls">今天踩的 4 个坑（这部分最值钱）</h2>
+
+<div class="pitfall">
+  <h3 style="margin-top:0;">坑 1 · <code>gcloud: command not found</code></h3>
+  <p><strong>现象</strong>：install.sh 明明跑完了，`gcloud --version` 还是找不到命令。</p>
+  <p><strong>原因</strong>：用了 <code>--quiet</code>，安装脚本跳过了「把 PATH 写进 bashrc」那一步。二进制其实已经装好了，只是 shell 找不到。</p>
+  <p><strong>验证 / 修复</strong>：</p>
+<pre><code><span class="c-comment"># 先证明它装好了</span>
+/root/google-cloud-sdk/bin/gcloud --version
+
+<span class="c-comment"># 永久加进 PATH（顺带补全）</span>
+echo 'source /root/google-cloud-sdk/path.bash.inc' &gt;&gt; ~/.bashrc
+echo 'source /root/google-cloud-sdk/completion.bash.inc' &gt;&gt; ~/.bashrc
+source ~/.bashrc
+gcloud --version</code></pre>
+  <p><strong>教训</strong>：<code>source ~/.bashrc</code> 救不了「bashrc 里压根没这行」的情况。</p>
+</div>
+
+<div class="pitfall">
+  <h3 style="margin-top:0;">坑 2 · <code>curl</code> 完全没反应</h3>
+  <p><strong>现象</strong>：<code>curl -sI http://IP/</code> 敲下去，什么都不打印，也不报错。</p>
+  <p><strong>原因</strong>：<code>-s</code> 是静默模式，<strong>连错误信息一起吞了</strong>。「没输出」不等于 200，也不等于 404，可能是超时。</p>
+  <p><strong>正确姿势</strong>：调试时永远不要只加 <code>-s</code>，要加 <code>-v</code> 和超时：</p>
+<pre><code>curl -v -m 15 http://$IP/ 2&gt;&amp;1 | head -30
+nc -vz -w 5 $IP 80</code></pre>
+  <p><strong>教训</strong>：<code>-s</code> 是给脚本用的，不是给排查用的。</p>
+</div>
+
+<div class="pitfall">
+  <h3 style="margin-top:0;">坑 3 · 403 Forbidden（bucket 私有）</h3>
+  <p><strong>现象</strong>：</p>
+<pre><code>HTTP/1.1 403 Forbidden
+Content-Type: application/xml
+X-GUploader-UploadID: AFy3sg...
+Server: UploadServer</code></pre>
+  <p><strong>判断</strong>：<code>Server: UploadServer</code> + <code>X-GUploader-UploadID</code> 是 <strong>GCS 的特征头</strong>——说明请求已经穿透 LB 打到了 GCS，只是 GCS 拒绝了匿名访问。链路是通的，问题只在权限。</p>
+  <p><strong>修复（静态站公开读）</strong>：</p>
+<pre><code><span class="c-comment"># 先给公开读（能读对象）</span>
+gcloud storage buckets add-iam-policy-binding gs://lukecheng-static-site \
+  --member=allUsers --role=roles/storage.objectViewer
+
+<span class="c-comment"># 但这个角色也能「列目录」，换成只能读文件、不能列目录的</span>
+gcloud storage buckets remove-iam-policy-binding gs://lukecheng-static-site \
+  --member=allUsers --role=roles/storage.objectViewer
+
+gcloud storage buckets add-iam-policy-binding gs://lukecheng-static-site \
+  --member=allUsers --role=roles/storage.legacyObjectReader</code></pre>
+  <p><strong>两个角色的区别</strong>：<code>objectViewer</code> = 能读 + 能列目录（会泄露文件清单）；<code>legacyObjectReader</code> = 只能按名字读，不能列目录。</p>
+  <p><strong>教训</strong>：403 + GCS 特征头 = 权限问题，不是 LB 配置问题。</p>
+</div>
+
+<div class="pitfall">
+  <h3 style="margin-top:0;">坑 4 · 根路径 <code>/</code> 打不开，还一度泄露文件列表</h3>
+  <p><strong>现象一</strong>：<code>curl -sI http://IP/</code> → <code>404 Not Found</code>（Google 样式错误页）。</p>
+  <p><strong>原因</strong>：Cloud Storage backend bucket <strong>没有「默认首页」概念</strong>。LB 收到 <code>GET /</code> 会去 bucket 找一个名叫 <code>/</code>（空）的对象，找不到就 404。它不会自动把 <code>/</code> 翻译成 <code>/index.html</code>。</p>
+  <p><strong>现象二（更糟）</strong>：给 bucket 加了 <code>objectViewer</code> 之后，<code>GET /</code> 变成 <code>200</code>，但返回的是这种 XML：</p>
+<pre><code>&lt;ListBucketResult&gt;&lt;Name&gt;lukecheng-static-site&lt;/Name&gt;...
+&lt;Key&gt;img/test.jpg&lt;/Key&gt;...&lt;Key&gt;index.html&lt;/Key&gt;...</code></pre>
+  <p>这是 <strong>bucket 的文件清单</strong>——因为 <code>objectViewer</code> 带「列目录」权限，匿名用户把你的文件全列出来了。这不是「好了」，是更严重的暴露。</p>
+  <p><strong>正确修复</strong>：在 URL map 里加一条 301，只把 <code>/</code> 重定向到 <code>/index.html</code>（其他路径不动）。</p>
+<pre><code>cat &gt; /tmp/urlmap.yaml &lt;&lt;'EOF'
+name: static-site-urlmap
+defaultService: https://www.googleapis.com/compute/v1/projects/lukechengtest/global/backendBuckets/static-site-backend
+hostRules:
+- hosts:
+  - "*"
+  pathMatcher: allpaths
+pathMatchers:
+- name: allpaths
+  defaultService: https://www.googleapis.com/compute/v1/projects/lukechengtest/global/backendBuckets/static-site-backend
+  routeRules:
+  - priority: 1
+    matchRules:
+    - fullPathMatch: /
+    urlRedirect:
+      pathRedirect: /index.html
+      redirectResponseCode: MOVED_PERMANENTLY_DEFAULT
+EOF
+
+<span class="c-comment"># 导入前先看文件写对没</span>
+cat /tmp/urlmap.yaml
+
+<span class="c-comment"># 导入（会提示 overwrite，输 y）</span>
+gcloud compute url-maps import static-site-urlmap --global --source=/tmp/urlmap.yaml
+
+<span class="c-comment"># 关键：确认规则真的进去了（不为空才对）</span>
+gcloud compute url-maps describe static-site-urlmap --global --format='value(pathMatchers)'</code></pre>
+  <p><strong>为什么用 301 而不是 rewrite</strong>：<code>urlRedirect</code> 兼容性更好（rewrite 的 <code>urlRewrite</code> 在部分 gcloud 版本会被忽略，导进去也看不到）。对静态站来说，301 到 <code>/index.html</code> 完全够用。</p>
+  <p><strong>验证</strong>：</p>
+<pre><code>curl -sI http://$IP/              <span class="c-out"># 301 + Location: /index.html</span>
+curl -sIL http://$IP/             <span class="c-out"># 跟随：301 → 200 + text/html</span>
+curl -sL  http://$IP/ | head -10  <span class="c-out"># 看到 &lt;h1&gt;Hello from Cloud Storage...&lt;/h1&gt;</span></code></pre>
+  <p><strong>教训</strong>：<code>200</code> 不等于「对了」——要看你 200 回来的是什么内容。</p>
+</div>
+
+<h2 id="verify">完整验证清单</h2>
+<p>今天做完的，应该全部打勾：</p>
+<ul class="chk">
+  <li class="done">bucket 里只有 <code>index.html</code> 和 <code>img/test.jpg</code></li>
+  <li class="done">5 个 LB 组件都建好了（IP / backend bucket / url map / http proxy / forwarding rule）</li>
+  <li class="done"><code>curl -sI http://IP/index.html</code> → 200</li>
+  <li class="done"><code>curl -sI http://IP/img/test.jpg</code> → 200</li>
+  <li class="done"><code>curl -sI http://IP/</code> → 301 + Location: /index.html</li>
+  <li class="done"><code>curl -sL http://IP/</code> → 正确的 HTML 内容</li>
+  <li class="done">访问 <code>/</code> 不再返回文件清单 XML</li>
+</ul>
+
+<h2 id="tomorrow">明天要做：DNS / HTTPS / CDN</h2>
+
+<h3>第三步 · Cloud DNS 子域委派</h3>
+<p>把 <code>static.cloudworkflowdone.com</code> 交给 GCP 解析（不是加到 Cloudflare 代理，因为要练 GCP 自己的 CDN）。</p>
+<pre><code>PROJECT=lukechengtest
+
+<span class="c-comment"># 1) 启用 API + 建 public zone</span>
+gcloud services enable dns.googleapis.com --project=$PROJECT
+
+gcloud dns managed-zones create static-site-zone \
+  --dns-name=static.cloudworkflowdone.com. \
+  --description="Static site: GCS + HTTPS LB" \
+  --visibility=public \
+  --project=$PROJECT
+
+<span class="c-comment"># 2) 拿 4 个 NS 地址（Cloudflare 要用）</span>
+gcloud dns managed-zones describe static-site-zone \
+  --format='value(nameServers)' --project=$PROJECT
+
+<span class="c-comment"># 3) 在 zone 里加 A 记录 → LB IP</span>
+gcloud dns record-sets create static.cloudworkflowdone.com. \
+  --zone=static-site-zone --type=A --ttl=300 \
+  --rrdatas=136.82.37.171 --project=$PROJECT</code></pre>
+
+<p><strong>Cloudflare 操作</strong>：DNS → Records → Add record，Type <code>NS</code>，Name <code>static</code>，把 GCP 给的 4 个 NS 一条一个加进去，<strong>Proxy status 必须是 DNS only（灰云）</strong>。如果之前给 <code>static</code> 建过 A/CNAME，先删掉。</p>
+
+<pre><code>dig +short NS static.cloudworkflowdone.com      <span class="c-out"># 4 个 googledomains.com</span>
+dig +short static.cloudworkflowdone.com         <span class="c-out"># 136.82.37.171</span>
+curl -sI http://static.cloudworkflowdone.com/   <span class="c-out"># 301</span></code></pre>
+<div class="note">NS 委派生效要等几分钟到十几分钟，<code>dig</code> 不到先别慌，等 5~10 分钟再试。</div>
+
+<h3>第四步 · Google 托管证书 + HTTPS</h3>
+<pre><code><span class="c-comment"># 1) 建证书（会先 PROVISIONING，等 DNS 验证）</span>
+gcloud compute ssl-certificates create static-site-cert \
+  --domains=static.cloudworkflowdone.com --global --project=$PROJECT
+
+<span class="c-comment"># 2) HTTPS proxy</span>
+gcloud compute target-https-proxies create static-site-https-proxy \
+  --url-map=static-site-urlmap \
+  --ssl-certificates=static-site-cert --project=$PROJECT
+
+<span class="c-comment"># 3) 443 forwarding rule</span>
+gcloud compute forwarding-rules create static-site-https-rule \
+  --address=static-site-ip --global \
+  --target-https-proxy=static-site-https-proxy \
+  --ports=443 --project=$PROJECT
+
+<span class="c-comment"># 4) 查证书状态：PROVISIONING → ACTIVE 才算成功</span>
+gcloud compute ssl-certificates describe static-site-cert --global \
+  --format='value(managed.status,managed.domainStatus)' --project=$PROJECT</code></pre>
+<p>证书 ACTIVE 后验证：</p>
+<pre><code>curl -sI https://static.cloudworkflowdone.com/
+echo | openssl s_client -connect static.cloudworkflowdone.com:443 \
+  -servername static.cloudworkflowdone.com 2&gt;/dev/null \
+  | openssl x509 -noout -issuer -subject</code></pre>
+<p>issuer 应该是 <code>Google Trust Services</code>（不是 Let's Encrypt——这次是 Google 托管证书）。</p>
+
+<h3>第五步 · 开 Cloud CDN 验证缓存</h3>
+<pre><code><span class="c-comment"># 给 backend bucket 开 CDN</span>
+gcloud compute backend-buckets update static-site-backend \
+  --enable-cdn --project=$PROJECT
+
+<span class="c-comment"># 第一次请求：MISS</span>
+curl -sI https://static.cloudworkflowdone.com/img/test.jpg | grep -iE 'age|cache'
+
+<span class="c-comment"># 再请求一次：应该 Age &gt; 0（命中缓存）</span>
+curl -sI https://static.cloudworkflowdone.com/img/test.jpg | grep -iE 'age|cache'</code></pre>
+<p>验证点：第二次响应出现 <code>Age: 数字</code>，说明命中 CDN 缓存。之后再做练习要求的 3 个破坏-修复（bucket 私有 403 / 关 CDN 改 TTL / DNS 指错）。</p>
+
+<h2 id="cleanup">收尾清理（防扣费）</h2>
+<p>练完不需要保留的话，按依赖顺序删（先删引用方，再删被引用方）：</p>
+<pre><code><span class="c-comment"># 1) 删转发规则和代理</span>
+gcloud compute forwarding-rules delete static-site-http-rule --global --quiet
+gcloud compute forwarding-rules delete static-site-https-rule --global --quiet
+gcloud compute target-http-proxies delete static-site-http-proxy --quiet
+gcloud compute target-https-proxies delete static-site-https-proxy --quiet
+
+<span class="c-comment"># 2) 删 url map / backend bucket / 证书 / IP</span>
+gcloud compute url-maps delete static-site-urlmap --quiet
+gcloud compute backend-buckets delete static-site-backend --quiet
+gcloud compute ssl-certificates delete static-site-cert --global --quiet
+gcloud compute addresses delete static-site-ip --global --quiet
+
+<span class="c-comment"># 3) 删 DNS zone（可选）</span>
+gcloud dns managed-zones delete static-site-zone --quiet
+
+<span class="c-comment"># 4) 删 bucket（连同内容）</span>
+gcloud storage rm -r gs://lukecheng-static-site</code></pre>
+<div class="note">删之前先在 Cloudflare 把 <code>static</code> 的 NS 记录撤掉，避免留下悬空委派。</div>
+
+<h2 id="cheat">命令速查（今天已验证的部分）</h2>
+<p>从头到尾一次跑完的顺序（假设 bucket 和内容已经准备好）：</p>
+<pre><code>PROJECT=lukechengtest
+
+<span class="c-comment"># --- 建 bucket ---</span>
+gcloud storage buckets create gs://lukecheng-static-site \
+  --location=us-central1 --uniform-bucket-level-access
+
+<span class="c-comment"># --- 上传 ---</span>
+cd ~/static-site
+gcloud storage cp -r . gs://lukecheng-static-site/ --exclude='.DS_Store'
+gcloud storage ls -r gs://lukecheng-static-site/
+
+<span class="c-comment"># --- LB 五件套 ---</span>
+gcloud compute addresses create static-site-ip --global --project=$PROJECT
+gcloud compute backend-buckets create static-site-backend \
+  --gcs-bucket-name=lukecheng-static-site --project=$PROJECT
+gcloud compute url-maps create static-site-urlmap \
+  --default-backend-bucket=static-site-backend --project=$PROJECT
+gcloud compute target-http-proxies create static-site-http-proxy \
+  --url-map=static-site-urlmap --project=$PROJECT
+gcloud compute forwarding-rules create static-site-http-rule \
+  --address=static-site-ip --global \
+  --target-http-proxy=static-site-http-proxy --ports=80 --project=$PROJECT
+
+<span class="c-comment"># --- 权限（公开读，但不能列目录）---</span>
+gcloud storage buckets add-iam-policy-binding gs://lukecheng-static-site \
+  --member=allUsers --role=roles/storage.legacyObjectReader
+
+<span class="c-comment"># --- 根路径 301 到 index.html（见坑 4 的 YAML）---</span>
+gcloud compute url-maps import static-site-urlmap --global --source=/tmp/urlmap.yaml
+
+<span class="c-comment"># --- 验证 ---</span>
+IP=$(gcloud compute addresses describe static-site-ip --global --format='value(address)')
+curl -sI http://$IP/
+curl -sIL http://$IP/
+curl -sL http://$IP/ | head -10</code></pre>
+
+<div class="tip">
+  <strong>一句话记住今天</strong><br>
+  建站不是「把文件传上去就完事」——LB 是五件套（IP / backend bucket / url map / proxy / forwarding rule），权限是单独一层，根路径要单独映射。每一层都要有自己的验证方法，出问题才能定位到具体哪一层。
+</div>
+
+</div>
+</body>
+</html>
