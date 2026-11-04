@@ -1,7 +1,6 @@
 # Terraform 运行产物不进 git
 .terraform/
-*.tfstate
-*.tfstate.*
+*tfstate*
 crash.log
 *.tfvars
 *.tfvars.json
