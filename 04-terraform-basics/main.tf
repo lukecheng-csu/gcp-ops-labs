@@ -21,6 +21,10 @@ resource "google_compute_instance" "web" {
   machine_type = var.machine_type
   zone         = var.zone
 
+  # 改机型等操作需要停机执行；不设此项，apply 会直接报错拒绝
+  # （GCE provider 的显式授权门禁：绝不悄悄停你的机器）
+  allow_stopping_for_update = true
+
   boot_disk {
     initialize_params {
       image = "debian-cloud/debian-12"
