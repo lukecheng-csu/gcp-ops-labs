@@ -40,6 +40,8 @@ flowchart LR
 
 ## 资源清单（project: lukechengtest）
 
+> **环境状态（2026-11-04）**：演练收尾，按方案 B 拆除了 LB 五件套（转发规则 ×2、代理 ×2、URL map）+ backend bucket 资源 + 托管证书 + 静态 IP，并删除指向已释放 IP 的悬空 A 记录。**保留**：`gs://lukecheng-static-site` 存储桶、Cloud DNS zone `static-site-zone`（SOA/NS 仍在，Cloudflare 的 NS 委派不动）。练习 4 重建时从 handbook 的 LB 段开始，静态 IP 可能变化、证书需重新走 PROVISIONING（约 30–60 分钟）。
+
 | 资源 | 名称 / 值 |
 |------|-----------|
 | Bucket | `gs://lukecheng-static-site` |
