@@ -31,12 +31,12 @@ flowchart LR
 
 ## 核心教训（三轮演练沉淀）
 
-1. **`age:` ≠ Cloud CDN。** 它来自 GCS 自己的全球边缘缓存。判定 CDN 只看 `X-Cache` 和 `Via: 1.1 google`。
+1. **`age:` ≠ Cloud CDN。** 它来自 GCS 自己的全球边缘缓存。Cloud CDN 默认不发 `X-Cache`，判定命中要看 `{cdn_cache_status}` 自定义头 / CDN logging / `cache_result` 指标。
 2. **DNS 类故障指纹是"超时/NXDOMAIN"，不是 5xx。** 导航指错车到不了店；服务本身、证书都无恙。
 3. **判断 DNS 生效看权威 NS**（字母必须对上自己 zone 的 c1–c4 编号）；本地 resolver 有 TTL 300 缓存，别拿缓存当真相——没真正生效就下结论会自己绕进去。
 4. **`curl --resolve` 绕过 DNS**（测 DNS 故障别带它）；**shell 有 `http_proxy` 时 `--resolve` 还会被代理无视**，必须配 `--noproxy '*'`。
 5. **缓存会掩护故障。** 撤权限后老缓存照样 200，手机（无缓存）才见真面目。验证要穿透缓存或换新对象。
-6. 跳板机 squid 的 `X-Cache: MISS from ...`（带 from 后缀）与 Cloud CDN 的裸 `X-Cache: HIT` 同名不同源，抓头时先分清路径里有谁。
+6. 跳板机 squid 的 `X-Cache: MISS from ...`（带 from 后缀）是 squid 自己的头；Cloud CDN 根本不发 `X-Cache`，所以别拿「有没有 X-Cache」当 CDN 状态信号，抓头前先分清路径里有谁。
 
 ## 资源清单（project: lukechengtest）
 

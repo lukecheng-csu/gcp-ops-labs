@@ -47,8 +47,8 @@ Cloud DNS 改记录值必须走**事务**（先删旧再加新，一次提交）
 ```bash
 gcloud dns record-sets transaction start --zone=static-site-zone
 
-gcloud dns record-sets transaction remove static.cloudworkflowdone.com. \
-  --zone=static-site-zone --type=A --ttl=300
+gcloud dns record-sets transaction remove 136.82.37.171 \
+  --name=static.cloudworkflowdone.com. --type=A --ttl=300 --zone=static-site-zone
 
 gcloud dns record-sets transaction add 192.0.2.1 \
   --zone=static-site-zone --name=static.cloudworkflowdone.com. \
@@ -88,8 +88,8 @@ dig @$NS static.cloudworkflowdone.com +short
 ```bash
 gcloud dns record-sets transaction start --zone=static-site-zone
 
-gcloud dns record-sets transaction remove static.cloudworkflowdone.com. \
-  --zone=static-site-zone --type=A --ttl=300
+gcloud dns record-sets transaction remove 192.0.2.1 \
+  --name=static.cloudworkflowdone.com. --type=A --ttl=300 --zone=static-site-zone
 
 gcloud dns record-sets transaction add 136.82.37.171 \
   --zone=static-site-zone --name=static.cloudworkflowdone.com. \

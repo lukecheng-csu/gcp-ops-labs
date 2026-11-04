@@ -4,12 +4,18 @@
 
 **`age:` 不是 Cloud CDN 的身份证。它来自 GCS（Cloud Storage）自己的全球边缘缓存，跟 Cloud CDN 开没开无关。**
 
-Cloud CDN 真正的身份证是这两个响应头：
+那 Cloud CDN 命中怎么判？关键前提：**Cloud CDN 默认不吐任何缓存状态头**。
 
-- `X-Cache: HIT` / `X-Cache: MISS`
-- `Via: 1.1 google`
+- `X-Cache` 是 squid / CloudFront 的惯例，Cloud CDN 不发；
+- `Via: 1.1 google` 只表示请求经过了 Google 前端(GFE)，命中、未命中、没开缓存都会带，不能当命中证据。
 
-只要这两个没出现，就说明请求没经过 Cloud CDN 缓存层——哪怕 `age:` 再大也不是 CDN 给的。
+权威判据只有三条：
+
+1. **自定义响应头** `{cdn_cache_status}`（= hit / miss），需在 backend 上显式配置。
+2. **Cloud CDN logging**：`httpRequest.cacheHit` + `jsonPayload.cacheId`。
+3. **Cloud Monitoring** 指标 `loadbalancing.googleapis.com/https/request_count` 的 `cache_result` 标签。
+
+本实验能下「CDN 没干活」的结论，依据是 `enableCdn=False` 这个**配置事实**，不是 X-Cache 有没有出现。
 
 ---
 
@@ -50,7 +56,7 @@ sleep 300   # 等 5 分钟让开关真正生效（别没生效就下结论）
 
 1. `enableCdn=False` 确认了，CDN 关着，但 `age: 4 / 7 / 19` 照样出现 → `age` 与 Cloud CDN 开关无关。
 2. 每条响应都是 `server: UploadServer` + 带 `x-guploader-uploadid`。这两个是 **GCS 源站直吐**的标志。Cloud CDN 命中是从自己的缓存回，不会再去 GCS 源站，也就不会有 uploadid。
-3. 六次请求里 `X-Cache` / `Via: 1.1 google` **一次都没出现** → Cloud CDN 在这条路径上压根没干活。
+3. 「Cloud CDN 没干活」的依据是 `enableCdn=False` 这个配置事实；请求里没有 `X-Cache` 是 Cloud CDN 的默认行为（它本就不发 X-Cache），不能反过来拿 X-Cache 缺失当 CDN 状态证据。
 
 ### 为什么 B3/B4/B6 有 age、B1/B2/B5 没有？
 
@@ -67,7 +73,7 @@ sleep 300   # 等 5 分钟让开关真正生效（别没生效就下结论）
 
 实验 A 跑 `--enable-cdn` 时返回 `No change requested`，说明当时配置位 `enableCdn` 已经是 True。但即使那样，响应里依然**没有 `X-Cache` / `Via`**，只有 `age`。
 
-结合实验 B 的证明（`age` 是 GCS 边缘缓存给的），"配置位 True"并不等于"CDN 真在缓存这条路径"。真正判断 CDN 是否生效，永远看 `X-Cache` / `Via`，别看 `age`。
+结合实验 B 的证明（`age` 是 GCS 边缘缓存给的），"配置位 True"并不等于"CDN 真在缓存这条路径"。真正判断 CDN 是否命中，用 `{cdn_cache_status}` 自定义头 / CDN logging / `cache_result` 指标这三条权威判据，别拿 `age` 或 `X-Cache` 的缺失下结论。
 
 ---
 
@@ -80,6 +86,7 @@ sleep 300   # 等 5 分钟让开关真正生效（别没生效就下结论）
 
 ## 一句话带走
 
-- 想确认 Cloud CDN 有没有在干活 → 抓 `X-Cache` 和 `Via: 1.1 google`。
+- 想确认 Cloud CDN 有没有命中 → 配 `{cdn_cache_status}` 自定义头 / 开 CDN logging / 看 `cache_result` 指标（三选一）。
+- Cloud CDN 默认不发 `X-Cache`；`Via: 1.1 google` 只表示经过 GFE，都不是命中证据。
 - 看到 `age:` 别激动，GCS 自己也会加，不能拿它证明 CDN 开关状态。
 - 验证前一定等开关真正生效（本次等了 5 分钟），没生效就下结论会自己绕进去。
