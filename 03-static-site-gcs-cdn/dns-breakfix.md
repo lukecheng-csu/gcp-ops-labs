@@ -123,8 +123,45 @@ curl --noproxy '*' -s -o /dev/null -w "after HTTP %{http_code}\n" \
 - **事务必须配对**：`transaction remove` 的 name/type/ttl 必须和现有记录完全一致，否则提交报错。
 - **证书不受影响**：Google 托管证书还是 ACTIVE。DNS 坏只坏"找到服务器"这一步，TLS 层毫无感知。
 
+## 实战记录（2026-11-04 已跑通）
+
+破坏执行顺利：事务 `change 2` status=done，A 记录成功换成 `192.0.2.1`。三层观察全部命中预期，过程中额外踩中两个新坑：
+
+### 坑 1：dig 权威 NS 查出空答案 —— 字母没对上
+
+```
+dig @ns-cloud-a1.googledomains.com ...   ← 空答案
+dig @ns-cloud-c1.googledomains.com ...   ← 192.0.2.1 ✓
+```
+
+Cloud DNS 给每个 zone 分配的权威服务器带**字母编号**（本 zone 是 c1–c4，见 `managed-zones describe` 的 `nameServers`）。`a1` 是别人 zone 的服务器，不认识你的域名，只会返回空。**查权威答案前先 describe 拿到自己 zone 的那组名字。**
+
+### 坑 2：设了 http_proxy 环境变量时，--resolve 被无视
+
+```
+curl --resolve static.cloudworkflowdone.com:443:136.82.37.171 https://...
+curl: (56) CONNECT tunnel failed, response 503
+```
+
+失败原因**不是**服务挂了：shell 里 `http_proxy=127.0.0.1:3128`（squid），curl 把请求交给代理，**代理自己做 DNS 解析**（拿到 192.0.2.1）然后连黑洞。`--resolve` 只管 curl 自己的解析，管不了代理的。
+
+**正确姿势：`--noproxy '*'` 和 `--resolve` 必须一起上**，才能验证"服务没坏、只是 DNS 指错"：
+
+```bash
+curl --noproxy '*' --resolve static.cloudworkflowdone.com:443:136.82.37.171 \
+  https://static.cloudworkflowdone.com/ -o /dev/null -w "%{http_code}\n"
+# 预期 200 ← 服务和证书都活着，死的只是导航
+```
+
+### 命中预期的观察
+
+- 事务提交后 SOA 序列号自动 1→2（Cloud DNS 每次变更都会 bump，供从服务器同步）。
+- 传播比预想快：本地 resolver、8.8.8.8、1.1.1.1 几分钟内全部变成 `192.0.2.1`（这些 resolver 没有旧缓存，TTL 300 没挡路）。
+- 走 squid 的 curl 返回 503 + `X-Squid-Error: ERR_CONNECT_FAIL 110`——剥开代理的包装，本质就是"连接 192.0.2.1 超时"，DNS 类故障的"超时不是 5xx"指纹成立。
+
 ## 一句话带走
 
 - 子域走 NS 委派后，**A 记录归 Cloud DNS 管，Cloudflare 只管指路**。
 - DNS 类故障的指纹是**连接超时 / NXDOMAIN**，不是 5xx；且 Cloudflare 无感知。
 - 判断 DNS 生效看**权威 NS**，判断服务活着用**不带 --resolve 的 curl**。
+- 有代理环境变量时，**--resolve 必须配 --noproxy '*'**，否则解析权在代理手里。
