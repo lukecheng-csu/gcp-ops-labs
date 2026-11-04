@@ -69,9 +69,9 @@ gcloud compute backend-buckets delete static-site-backend --quiet --project=$PRO
 gcloud compute ssl-certificates delete static-site-cert --global --quiet --project=$PROJECT
 gcloud compute addresses delete static-site-ip --global --quiet --project=$PROJECT
 
-# DNS：先删 A 记录才能删 zone（Cloudflare 侧的 NS 委派记录去 Cloudflare 面板删）
+# DNS：先删 A 记录才能删 zone（注意：delete 不认 --ttl；Cloudflare 侧 NS 委派去面板删）
 gcloud dns record-sets delete static.cloudworkflowdone.com. \
-  --zone=static-site-zone --type=A --ttl=300 --quiet --project=$PROJECT
+  --zone=static-site-zone --type=A --quiet --project=$PROJECT
 gcloud dns managed-zones delete static-site-zone --quiet --project=$PROJECT
 
 # 存储桶
