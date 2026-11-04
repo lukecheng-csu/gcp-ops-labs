@@ -55,7 +55,7 @@ resource "google_compute_firewall" "web" {
 
   allow {
     protocol = "tcp"
-    ports    = ["80", "443"]
+    ports    = ["80", "443", ]
   }
 
   target_tags   = ["http-server"]
