@@ -159,6 +159,12 @@ curl --noproxy '*' --resolve static.cloudworkflowdone.com:443:136.82.37.171 \
 - 传播比预想快：本地 resolver、8.8.8.8、1.1.1.1 几分钟内全部变成 `192.0.2.1`（这些 resolver 没有旧缓存，TTL 300 没挡路）。
 - 走 squid 的 curl 返回 503 + `X-Squid-Error: ERR_CONNECT_FAIL 110`——剥开代理的包装，本质就是"连接 192.0.2.1 超时"，DNS 类故障的"超时不是 5xx"指纹成立。
 
+### 回滚与恢复（同日完成）
+
+- 事务 `change 3` 把 A 记录换回 `136.82.37.171`，权威 NS（c1）秒级确认复原。
+- `curl --noproxy '*'` 走真实 DNS：解析到 `136.82.37.171` → TLS 握手成功（Google Trust Services 签发）→ `HTTP/2 301 → /index.html`。**301 是当初 URL map 配的 `/` 跳转，属基线行为，不是故障。**
+- 走 squid 的 curl 同样恢复 301——squid 的 `X-Cache`/`Via` 是代理自己的头，与破坏 2 的 CDN 头同姓不同人，正好互相印证。
+
 ## 一句话带走
 
 - 子域走 NS 委派后，**A 记录归 Cloud DNS 管，Cloudflare 只管指路**。
