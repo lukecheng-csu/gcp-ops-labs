@@ -76,6 +76,55 @@
 2. 备份后删 `terraform.tfstate` → `plan` 看到「全要重建」→ 学 `terraform import` 救。
 3. 改错属性让 apply 中途失败 → 观察部分应用状态，`taint` / `replace` 修。
 
+### 扩展任务：用 Terraform 把练习 3 的 CDN 判据落成代码
+
+练习 3 遗留一个未闭环的问题：Cloud CDN 默认不发任何缓存状态头，当时只能靠 `enableCdn` 配置事实下结论。练习 4 顺手补上——给 `gs://lukecheng-static-site` 写一个 backend bucket 资源（LB 后续要重建时直接复用），并挂上自定义响应头让 CDN「开口说话」：
+
+```hcl
+resource "google_compute_backend_bucket" "site" {
+  name        = "static-site-backend"
+  bucket_name = "lukecheng-static-site"
+  enable_cdn  = true
+
+  custom_response_headers = [
+    "X-Cache-Status: {cdn_cache_status}",
+    "X-Cache-ID: {cdn_cache_id}",
+  ]
+}
+```
+
+```bash
+# gcloud 等价（beta）
+gcloud beta compute backend-buckets update static-site-backend \
+  --custom-response-header='X-Cache-Status: {cdn_cache_status}'
+```
+
+配好后 `curl -D -` 直接看 `X-Cache-Status: hit` / `miss`，`X-Cache-ID` 还能告诉你命中在哪个缓存节点。
+
+### CDN 命中判定速查（练习 3 纠错沉淀，练习 4 实操验证）
+
+**先记牢：三条「别信」，一条「别单独下结论」**
+
+- `X-Cache` — Cloud CDN **根本不发**，那是 squid / CloudFront 的头。
+- `Via: 1.1 google` — 只表示「经过了 GFE」，命中、未命中、没开缓存都带，**不是命中证据**。
+- `age:` — CDN 命中会加，但 GCS 自己的边缘缓存**也会加**，分不清是谁吐的（破坏 2 的结论）。
+
+**三条权威判据（从省事到最全）**
+
+1. **零配置**：Cloud Monitoring 指标 `loadbalancing.googleapis.com/https/request_count` 按 `cache_result` 标签拆（`HIT`/`MISS`/`DISABLED`），看宏观命中率。
+2. **最直观（推荐，即上面扩展任务）**：自定义响应头 `{cdn_cache_status}`，per-request 可见。
+3. **最全**：LB 开 logging，查 `httpRequest.cacheHit` + `jsonPayload.cacheId`，适合排查「为什么这个对象不命中」。
+
+**命中还有三个前提，不满足则 enableCdn=True 也一直 MISS**
+
+1. 对象要有合法 `Cache-Control`（`public, max-age=3600` 之类）；`no-store` / `private` / 缺省都不缓存。默认缓存模式 `USE_ORIGIN_HEADERS` 尊重对象头。
+2. 冷缓存 + 多 PoP：同一对象首次打到某 PoP 必是 MISS，第二次才 HIT。「Age 忽有忽无」一部分就是各 PoP 各冷各的。
+3. 开关要等生效（练习 4 破坏 2 踩过：改完等 5 分钟）。
+
+**排查顺序**：确认对象 `Cache-Control` 合法 → 配 `{cdn_cache_status}` 自定义头 → 同一网络对同一对象连打几次（keep-alive）→ 看到 `hit` 闭环。
+
+> Sources: [Troubleshoot Cloud CDN](https://cloud.google.com/cdn/docs/troubleshooting-steps) · [verify Cloud CDN cache hit — Stack Overflow](https://stackoverflow.com/questions/63274812/how-to-verify-if-a-cloud-cdn-response-was-a-cache-hit-or-comes-from-cdn)
+
 ## 四、练习 5–13 要点速览（每练习背 3 个词就够）
 
 - **5 TF 进阶**：GCS backend + state lock；modules；workspaces（dev/prod）。破坏：两终端同时 apply 看 lock 报错、注释 backend 后看「全要重建」恐怖场面。
