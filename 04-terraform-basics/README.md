@@ -72,6 +72,14 @@ GCP 自动给 TF 管的资源打 `goog-terraform-provisioned = "true"` 标签—
 - 改回合法值直接 `No changes`：API 拒绝是原子性的，服务端零变更、state 未动，代码=state=现实自动对齐。**更新类失败不留残局，自愈**。
 - taint 没用上：它的战场是「创建成功但后续步骤失败」（如 provisioner 半路挂，自动盖 tainted 章强制重建）或资源被外部搞坏 state 对不齐时手动盖章。
 
+### 附加演示：taint（盖「下次必须重建」的章）
+
+- `terraform taint google_compute_instance.web` → plan 显示 `is tainted, so must be replaced`、`-/+ destroy and then create replacement`、`1 to add, 1 to destroy`，instance_ip 变 `(known after apply)`（新机器新 IP）。
+- **taint 只改 state 不碰云**——盖章后不 apply，云上机器毫发无损；`terraform untaint` 揭章即复原。
+- 使用场景：机器内部被改乱/疑似污染/修不干净 → 不治了重造（「牲口不是宠物」）；或创建成功但后续步骤失败时 Terraform 自动盖章强制重建。
+- 新版等价写法：`terraform apply -replace="google_compute_instance.web"` 一步到位。
+- 与剧本 3 的区分：API 拒绝变更（服务端零变更）→ 自愈无需 taint；state 里的东西不可信（造坏/污染）→ 才需要 taint。
+
 ---
 
 ## 手搓（练习 1）vs IaC（练习 4）心得
