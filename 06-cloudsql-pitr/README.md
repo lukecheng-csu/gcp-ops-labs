@@ -1,0 +1,183 @@
+# 练习 6：Cloud SQL（PostgreSQL）时间点恢复 PITR
+
+> 路线图第四节。交付物：**实测 RPO/RTO 的一次真实 PITR 恢复**。
+> 铁律：先跑通 → 再破坏-修复；**不在免费额度，练完立刻删**。
+
+## 为什么这练习值钱
+
+对应「备份 / 容灾」（高 ROI，老本行）。把传统备份里的「备份窗口 / 日志前滚」换成云上的**自动备份 + WAL 事务日志**，再用一次真实的 `DROP TABLE` 事故，把 RPO / RTO 用秒表量出来——这是简历上能写「实测过」和「听说过」的分水岭。
+
+```mermaid
+flowchart LR
+  A[应用写入] --> B[(主实例 lab06-pg)]
+  B --> C[自动备份]
+  B --> D[WAL 事务日志 PITR]
+  E[DROP TABLE 误删] --> F[选事故前时间点 T1]
+  D --> G[clone --point-in-time]
+  F --> G
+  G --> H[(恢复实例 lab06-pg-restored)]
+  H --> I[核对数据 / 回灌]
+```
+
+## 成本红线（先看这条）
+
+- Cloud SQL **不在免费额度**：`db-f1-micro`（共享核）+ 10GB SSD + PITR 事务日志都按小时/GB 计费。
+- PITR 恢复会**新建一台完整实例**，恢复期间是双倍计费。
+- 开 `regional` HA（可选加餐）价格再翻倍。
+- 建议一次做完、2 小时内删干净；创建时务必带 `--no-deletion-protection`，否则最后删不掉还要先 patch。
+
+## 前置（2026-11-06 已核）
+
+- [x] `sqladmin.googleapis.com` 已启用（`gcloud services enable`，本次开工时做的）
+- [x] `db-f1-micro` 在 `us-central1` 可用（`gcloud sql tiers list` 实测）
+- [x] 本机 gcloud 支持 `--enable-point-in-time-recovery`、`clone --point-in-time`、`get-latest-recovery-time`
+- [ ] psql 客户端（`brew install libpq`，PATH 加 `/usr/local/opt/libpq/bin`）
+- [ ] 代理：本机默认代理对 Google API 报 Bad Gateway，四个变量全指向 squid `127.0.0.1:3128`
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:3128 HTTPS_PROXY=http://127.0.0.1:3128
+export http_proxy=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128
+export PATH="/usr/local/opt/libpq/bin:$PATH"
+```
+
+> 练习 6 用 gcloud 手搓，不复用练习 4/5 的 Terraform：这练的是「备份容灾」，不是 IaC。把注意力放在数据能不能回来。
+
+---
+
+## 第一轮：跑通
+
+### 1. 建实例（约 5–10 分钟，最费时间的一步）
+
+```bash
+export PGPASSWORD="$(openssl rand -base64 18)"   # 只存在当前终端，别写进仓库
+
+gcloud sql instances create lab06-pg \
+  --database-version=POSTGRES_15 \
+  --tier=db-f1-micro \
+  --region=us-central1 \
+  --availability-type=zonal \
+  --storage-size=10GB \
+  --storage-type=SSD \
+  --no-storage-auto-increase \
+  --enable-point-in-time-recovery \
+  --backup-start-time=02:00 \
+  --no-deletion-protection \
+  --root-password="$PGPASSWORD"
+
+gcloud sql instances describe lab06-pg \
+  --format='table(name,state,settings.tier,settings.availabilityType,settings.backupConfiguration.pointInTimeRecoveryEnabled)'
+```
+
+**观察点**：`--enable-point-in-time-recovery` 是这次实验的命门——它打开 WAL 事务日志，没有它只能恢复到整点备份，谈不上「时间点」。描述输出里确认 `pointInTimeRecoveryEnabled = True`。
+
+### 2. 连库
+
+```bash
+gcloud sql connect lab06-pg --user=postgres --quiet
+```
+
+新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权。**若本机网络直连不通**，改用控制台 **Cloud SQL Studio** 粘贴 `sql/` 里的脚本，效果一样，别在联网上耗时间。
+
+### 3. 造数据
+
+把 `sql/01_seed.sql` 贴进去，最后 `SELECT count(*)` 记下行数。
+**psql 用户**整段可贴；**Cloud SQL Studio 用户**先单独跑 `CREATE DATABASE lab06;`，在界面里把库切到 `lab06`，再从 `CREATE TABLE` 开始贴（Studio 不认 `\connect` 这类 psql 元命令）。
+
+### 4. 记时间点（这一步别省，RPO/RTO 全靠它）
+
+```bash
+python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z"))'
+```
+
+- **T0**：种子数据插入完成后立刻记
+- 再插几条「事故前的正常业务数据」，**等 2–3 分钟**让 WAL 归档攒起来
+- **T1**：记下来，这就是待会儿要恢复到的目标点（必须是 DROP 之前、数据都在之后）
+
+| 时间点 | 值（UTC） | 含义 |
+|--------|-----------|------|
+| T0 | | 种子数据完成 |
+| T1 | | 事故前的恢复目标 |
+| T_break | | 误删发生 |
+| T_restore_start | | 发起 clone |
+| T_restore_ready | | 恢复实例可查 |
+
+---
+
+## 第二轮：破坏-修复（自己敲、自己定位）
+
+### 破坏 1：DROP TABLE
+
+贴 `sql/02_break.sql`：
+
+```sql
+DROP TABLE orders;
+SELECT count(*) FROM orders;   -- 预期报错：relation "orders" does not exist
+```
+
+记下 **T_break**。这就是「生产事故」发生了。
+
+### 修复：查窗口 → 克隆到新实例 → 验证
+
+```bash
+# 1. 看能恢复到哪个时间范围
+gcloud sql instances get-latest-recovery-time lab06-pg
+
+# 2. 恢复到 T1（务必用 UTC、RFC3339、带毫秒 Z）
+gcloud sql instances clone lab06-pg lab06-pg-restored \
+  --point-in-time '2026-11-06T04:30:00.000Z'
+
+gcloud sql instances describe lab06-pg-restored --format='value(state)'
+```
+
+**三条必踩的坑，先记住再排查**：
+
+1. **PITR 永远创建新实例，不能原地恢复**（官方明文：`A point-in-time recovery always creates a new instance`）。所以业务侧要么切连接串，要么把数据回灌——这正是 RTO 的大头。
+2. **T1 必须落在恢复窗口内**（`earliestRecoveryTime` ~ `latestRecoveryTime`）。刚建的实例 WAL 还没攒够，恢复到太早的时间点会失败，等几分钟再试。
+3. **时间点格式**：RFC3339 UTC，如 `2026-11-06T04:30:00.094Z`；写成本地时间（GMT+8）会直接对不上。
+
+验证（连 `lab06-pg-restored`，贴 `sql/03_verify.sql`）：
+
+```sql
+SELECT count(*) FROM orders;   -- 应看到误删前的行数，T1 之后新增的那几条不该在
+```
+
+### RPO / RTO 实测表（自己填）
+
+| 指标 | 怎么算 | 实测值 |
+|------|--------|--------|
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的数据量 / 时间窗口 | |
+| **RTO**（多久恢复服务） | T_restore_ready − T_break | |
+| 恢复实例创建耗时 | T_restore_ready − T_restore_start | |
+| 实际可恢复粒度 | 秒级 / 分钟级（看 get-latest-recovery-time） | |
+
+**结论要回答的问题**：如果这是真生产，丢了什么、停了多久、下一步怎么把 RTO 压下来（预案脚本、连接串自动切换、只读副本等）。
+
+### 破坏 2（可选加餐）：HA failover
+
+路线图里还有 `failover 实测`，但要把实例改成 `--availability-type=regional`（价格翻倍、要重建）。想做的话另开一轮：
+
+```bash
+gcloud sql instances patch lab06-pg --availability-type=regional
+gcloud sql instances failover lab06-pg
+# 用一个循环持续 SELECT 1，数中断了多少秒
+```
+
+**建议**：主线 PITR 先闭环，HA 加餐看预算再决定，别让一台 regional 实例过夜。
+
+---
+
+## 收尾（必须，别让账单过夜）
+
+```bash
+gcloud sql instances delete lab06-pg-restored --quiet
+gcloud sql instances delete lab06-pg --quiet
+gcloud sql instances list                     # 预期空
+```
+
+删除前确认 `--no-deletion-protection` 生效；删完把上面的 RPO/RTO 表和「What I broke and how I fixed it」补进本文件，再 commit。
+
+## 文件
+
+- `sql/01_seed.sql` — 建库、建表、种子数据
+- `sql/02_break.sql` — 误删（破坏）
+- `sql/03_verify.sql` — 在恢复实例上核对数据
