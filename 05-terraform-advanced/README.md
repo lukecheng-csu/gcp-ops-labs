@@ -50,3 +50,24 @@ terraform workspace select dev   && terraform destroy
 terraform workspace select prod  && terraform destroy
 # 两个 workspace 都清了，state 文件保留（下一练习还能用），桶不删
 ```
+
+## 实战记录（2026-11-06，全流程已跑完）
+
+1. **remote state + module + workspaces 跑通**：dev/prod 各 apply 成功，GCS 上落 `default.tfstate / dev.tfstate / prod.tfstate` 三个账本。账本文件不进 plan——backend 只管记账，不算资源。
+2. **破坏 1：抢锁**：A 终端 apply 占锁，B 终端报 412 `conditionNotMet` + Lock Info。乐观锁教学完成。
+3. **破坏 2：换账本（失忆实验）**：
+   - 注释 backend → `init -reconfigure` → `plan` 显示 **`2 to add`**——云上机器活得好好的，空账本六亲不认；
+   - 恢复 backend → `init -reconfigure` → `plan` 回到 **`No changes`**。
+   - 结论：**state 才是 Terraform 的记忆，代码本身不记资源是否存在。**
+
+### 踩坑实录（下次直接绕开）
+
+- **Terraform 1.13 后端变更必须显式选路**：`init` 单独跑报 `Backend configuration changed`，必须加 `-reconfigure`（不搬旧账本，重新对准）或 `-migrate-state`（把账本搬过去）。换账本实验一律用 `-reconfigure`。
+- **「取消后端」的死循环 bug**：注释 backend 后 `init -reconfigure` 显示成功，但 `.terraform/terraform.tfstate` 缓存里仍记着 GCS 后端，导致 plan / workspace select 永远报 `Backend initialization required` 互相踢皮球。**解法：`rm .terraform/terraform.tfstate` 再 `init -reconfigure`**（该文件只是缓存，删除无风险）。
+- **412 锁报错 ≠ 锁还活着**：`force-unlock` 报 `storage: object doesn't exist` 说明锁已被进程退出时放掉，直接继续干活即可。
+- **workspace select 在后端变更中会死循环**：它自己也要过 backend 校验，后端缓存没清干净时就转不起来——先修缓存再操作 workspace。
+- **GCS API 走代理**：本机默认代理对 `oauth2.googleapis.com` 报 Bad Gateway，四个代理环境变量（HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy）全部指向 squid `127.0.0.1:3128` 后正常。
+
+### 收官
+
+dev 2 destroyed + prod 2 destroyed，计费归零。GCS 桶和三个空 state 保留，练习 6 继续用。
