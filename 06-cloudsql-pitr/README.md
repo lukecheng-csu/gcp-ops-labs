@@ -31,12 +31,13 @@ flowchart LR
 - [x] `sqladmin.googleapis.com` 已启用（`gcloud services enable`，本次开工时做的）
 - [x] `db-f1-micro` 在 `us-central1` 可用（`gcloud sql tiers list` 实测）
 - [x] 本机 gcloud 支持 `--enable-point-in-time-recovery`、`clone --point-in-time`、`get-latest-recovery-time`
-- [ ] psql 客户端（`brew install libpq`，PATH 加 `/usr/local/opt/libpq/bin`）
+- [ ] 数据库客户端（二选一，见「连库」）：① 自己终端 `brew install libpq`；② 不装客户端，直接用控制台 **Cloud SQL Studio**（零安装，推荐）
 - [ ] 代理：本机默认代理对 Google API 报 Bad Gateway，四个变量全指向 squid `127.0.0.1:3128`
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:3128 HTTPS_PROXY=http://127.0.0.1:3128
 export http_proxy=http://127.0.0.1:3128 https_proxy=http://127.0.0.1:3128
+# 若装了 libpq，把 psql 加进 PATH：
 export PATH="/usr/local/opt/libpq/bin:$PATH"
 ```
 
@@ -72,11 +73,19 @@ gcloud sql instances describe lab06-pg \
 
 ### 2. 连库
 
+**路线 A：命令行**（需要本机有 psql）。在你自己的终端装：
+
 ```bash
+brew install libpq
+export PATH="/usr/local/opt/libpq/bin:$PATH"
 gcloud sql connect lab06-pg --user=postgres --quiet
 ```
 
-新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权。**若本机网络直连不通**，改用控制台 **Cloud SQL Studio** 粘贴 `sql/` 里的脚本，效果一样，别在联网上耗时间。
+> 环境备注：WorkBuddy 的执行沙箱里 brew 调不了 `sandbox-exec`（`sandbox_apply: Operation not permitted`），装 libpq 会失败——这一步**必须在你自己的终端**做，别在 AI 侧重试。
+
+**路线 B：控制台（推荐，零安装）**：打开 **Cloud SQL Studio**，把 `sql/` 里的脚本粘进去执行。零客户端、零网络排障。
+
+新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权；两条路效果一样。`sql/` 脚本里已注明 Studio 用户要跳过 `\connect` 这类 psql 元命令（先单独建库，再把数据库切到 `lab06`）。
 
 ### 3. 造数据
 
@@ -135,7 +144,7 @@ gcloud sql instances describe lab06-pg-restored --format='value(state)'
 2. **T1 必须落在恢复窗口内**（`earliestRecoveryTime` ~ `latestRecoveryTime`）。刚建的实例 WAL 还没攒够，恢复到太早的时间点会失败，等几分钟再试。
 3. **时间点格式**：RFC3339 UTC，如 `2026-11-06T04:30:00.094Z`；写成本地时间（GMT+8）会直接对不上。
 
-验证（连 `lab06-pg-restored`，贴 `sql/03_verify.sql`）：
+验证（连**恢复实例**：命令行 `gcloud sql connect lab06-pg-restored --user=postgres --quiet`，或 Studio 里切到该实例，数据库选 `lab06`；贴 `sql/03_verify.sql`）：
 
 ```sql
 SELECT count(*) FROM orders;   -- 应看到误删前的行数，T1 之后新增的那几条不该在
