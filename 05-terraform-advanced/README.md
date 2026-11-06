@@ -109,6 +109,14 @@ TF_WORKSPACE=prod terraform destroy
 - **选 GCS 的真正收益**：state lock（同一账本同时只一人写）+ 版本历史（可回滚）。
 - **换成空的本地账本 = 失忆**（`2 to add`），指回 GCS = 记忆恢复（`No changes`）——治好失忆的是「换回记了账的本子」，不是「回到云上」。
 
+### 破坏 3：drift 检测（2026-11-06）
+
+- **属性级漂移**：手加 metadata → `plan` 以代码为基线，提议抹掉（`-` 箭头）；`plan -refresh-only` 以账本为基线，提议记账（`+` 箭头）——同一现实、相反箭头，是本练习的灵魂。
+- **手改手回**：手删 metadata → `plan` 直接 `No changes`（0.15+ plan 的 refresh 把现实写回账本，不用 apply）。
+- **资源级漂移**：控制台删 firewall → `plan` 判定缺失 `1 to add` → apply 重建。缺失的资源只能按代码重建，refresh-only 记不掉。
+- **彩蛋**：provider 自动打 `goog-terraform-provisioned=true` 标签，`gcloud ... --filter="labels.goog-terraform-provisioned=true"` 可扫出 IaC 资产（接管存量环境的第一招）。
+- 完整记录见 [drift-breakfix.md](drift-breakfix.md)。
+
 ### 收官
 
 dev 2 destroyed + prod 2 destroyed，计费归零。GCS 桶和三个空 state 保留，练习 6 继续用。
