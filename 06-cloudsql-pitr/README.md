@@ -31,7 +31,7 @@ flowchart LR
 - [x] `sqladmin.googleapis.com` 已启用（`gcloud services enable`，本次开工时做的）
 - [x] `db-f1-micro` 在 `us-central1` 可用（`gcloud sql tiers list` 实测）
 - [x] 本机 gcloud 支持 `--enable-point-in-time-recovery`、`clone --point-in-time`、`get-latest-recovery-time`
-- [ ] 数据库客户端（二选一，见「连库」）：① 自己终端 `brew install libpq`；② 不装客户端，直接用控制台 **Cloud SQL Studio**（零安装，推荐）
+- [ ] 数据库客户端（三选一，见「连库」）：① **Python 驱动 + `sql/pg.py`（本机首选，零编译）**；② 自己终端 `brew install libpq`（**Intel Mac 已装不上**）；③ 控制台 **Cloud SQL Studio**（本机加载失败过）
 - [ ] 代理：本机默认代理对 Google API 报 Bad Gateway，四个变量全指向 squid `127.0.0.1:3128`
 
 ```bash
@@ -75,22 +75,43 @@ gcloud sql instances describe lab06-pg \
 
 > **先把密码拿出来**：创建实例时 `--root-password="$PGPASSWORD"` 用的是当前终端的环境变量，换终端或用 Studio 登录前先跑 `echo $PGPASSWORD` 复制出来存好（别贴进仓库、别发聊天记录）。密码丢了可以用 `gcloud sql users set-password postgres --instance=lab06-pg --password=...` 重设。
 
-**路线 A：命令行**（需要本机有 psql）。在你自己的终端装：
+**路线 C：Python 驱动（本机首选，零编译）** — Intel Mac 上 Homebrew 已经装不了 libpq（见下），这条路绕开编译和 psql：
+
+```bash
+# 一次性准备（仓库根目录，已内置）
+cd ~/gcp-ops-labs
+python3 -m venv .venv-lab06
+.venv-lab06/bin/pip install psycopg2-binary     # 有 Intel 预编译包，不编译
+
+# 每次使用：先放行本机 IP（公网直连，做完记得清）
+cd 06-cloudsql-pitr
+MYIP=$(curl -s https://api.ipify.org)
+gcloud sql instances patch lab06-pg --authorized-networks="$MYIP/32" --quiet
+
+export PGHOST=136.65.84.201 PGUSER=postgres PGPASSWORD='<你的密码>' PGDATABASE=postgres
+../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql
+```
+
+`sql/pg.py` 是个迷你 psql：支持 `\connect` 切库、`--` 注释、逐条执行并在报错后继续（所以 `02_break.sql` 里 DROP 之后那条 `count(*)` 的报错会照实打出来，正是我们要的现场）。查询结果直接打成表格。
+
+> 用完清敞口：`gcloud sql instances patch lab06-pg --clear-authorized-networks`
+
+**路线 A：psql（最正统，但本机装不上）**：
 
 ```bash
 brew install libpq
-export PATH="/usr/local/opt/libpq/bin:$PATH"
+export PATH="$(brew --prefix libpq)/bin:$PATH"
 gcloud sql connect lab06-pg --user=postgres --quiet
 ```
 
+> **2026-11-07 实测：Intel Mac 上这条路走不通。** Homebrew 自 2026-09 起把 macOS Intel 降为 Tier 3，不再提供该配置的瓶子；`libpq` 依赖的 `icu4c@79` 只能源码编译，而你机器上的 Command Line Tools 16.4 编不过（`stubdata.cpp` 报 `#include <memory>` 相关错误，`make[1]: *** [stubdata.o] Error 1`）。
+> 想装真 psql 只有两条路：① 升 CLT 到 26.3（系统设置里更新，或 `sudo rm -rf /Library/Developer/CommandLineTools && sudo xcode-select --install`，要几个 G）；② 换 MacPorts。都不急，练习用路线 C 就行。
+
 > 环境备注：WorkBuddy 的执行沙箱里 brew 调不了 `sandbox-exec`（`sandbox_apply: Operation not permitted`），装 libpq 会失败——这一步**必须在你自己的终端**做，别在 AI 侧重试。
 
-> **Studio 打不开就别耗时间，直接走路线 A**：控制台报 `Failed to load: sqladmin.googleapis.com?...` 是浏览器/网络层加载失败，跟数据库本身无关（实例仍是 RUNNABLE）。
-> 命令行反而更贴近真实生产。同一个终端里 `PGPASSWORD` 还活着，psql 会自动读取、不用手输密码；连进去后在仓库目录下 `\i sql/01_seed.sql` 一把梭即可（脚本自带 `CREATE DATABASE` + `\connect`）。
+> **Studio 打不开就别耗时间**：控制台报 `Failed to load: sqladmin.googleapis.com?...` 是浏览器/网络层加载失败，跟数据库本身无关（实例仍是 RUNNABLE）。
 
-**路线 B：控制台（推荐，零安装）**：打开 **Cloud SQL Studio**，把 `sql/` 里的脚本粘进去执行。零客户端、零网络排障。
-
-新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权；两条路效果一样。`sql/` 脚本里已注明 Studio 用户要跳过 `\connect` 这类 psql 元命令（先单独建库，再把数据库切到 `lab06`）。
+**路线 B：控制台（零安装，但本机加载失败过）**：打开 **Cloud SQL Studio**，把 `sql/` 里的脚本粘进去执行。`sql/` 脚本里已注明 Studio 用户要跳过 `\connect` 这类 psql 元命令（先单独建库，再把数据库切到 `lab06`）。
 
 ### 3. 先打一次手动备份（建立恢复基线，别省）
 
@@ -106,8 +127,8 @@ gcloud sql instances get-latest-recovery-time lab06-pg
 
 ### 4. 造数据 + 记时间点（RPO/RTO 全靠这一步）
 
-把 `sql/01_seed.sql` 贴进去，最后 `SELECT count(*)` 应为 **5**，立刻记 **T0**。
-**psql 用户**整段可贴；**Cloud SQL Studio 用户**先单独跑 `CREATE DATABASE lab06;`，在界面里把库切到 `lab06`，再从 `CREATE TABLE` 开始贴（Studio 不认 `\connect` 这类 psql 元命令）。
+把 `sql/01_seed.sql` 整段跑一遍（`../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql`），最后 `SELECT count(*)` 应为 **5**，立刻记 **T0**。
+**pg.py / psql 用户**整段可贴（`\connect` 会被识别）；**Cloud SQL Studio 用户**先单独跑 `CREATE DATABASE lab06;`，在界面里把库切到 `lab06`，再从 `CREATE TABLE` 开始贴（Studio 不认 `\connect` 这类 psql 元命令）。
 
 记时间统一用这条（UTC、带毫秒、带 Z，clone 只认这个格式）：
 
@@ -148,7 +169,11 @@ SELECT count(*) FROM orders;                                      -- 确认 10
 
 ### 破坏 1：DROP TABLE
 
-贴 `sql/02_break.sql`（执行前记 **T_break**）：
+贴 `sql/02_break.sql`（执行前记 **T_break**）。用 pg.py 就是一条命令：
+
+```bash
+../.venv-lab06/bin/python sql/pg.py -f sql/02_break.sql --db lab06
+```
 
 ```sql
 SELECT count(*) FROM orders;   -- 先确认 10 行，这就是事故瞬间总共要面对的数据
@@ -176,7 +201,12 @@ gcloud sql instances describe lab06-pg-restored --format='value(state)'
 2. **T1 必须落在恢复窗口内**（`earliestRecoveryTime` ~ `latestRecoveryTime`），而且窗口要有**备份基线**：新建实例没做过任何备份时，先按第 3 步打一次按需备份，否则 clone 会直接失败。恢复到太早的时间点同样会失败，等几分钟让 WAL 归档再试。
 3. **时间点格式**：RFC3339 UTC，形如 `2026-11-07T03:50:00.094Z`（仅示意格式，日期时间按当天实测）；写成本地时间（GMT+8）会直接对不上。
 
-验证（连**恢复实例**：命令行 `gcloud sql connect lab06-pg-restored --user=postgres --quiet`，或 Studio 里切到该实例，数据库选 `lab06`；贴 `sql/03_verify.sql`）：
+验证（连**恢复实例**：pg.py 用 `PGHOST=<恢复实例IP> ... --db lab06`，或 `gcloud sql connect lab06-pg-restored --user=postgres --quiet`，或 Studio 里切到该实例选 `lab06`；贴 `sql/03_verify.sql`）：
+
+```bash
+export PGHOST=$(gcloud sql instances describe lab06-pg-restored --format='value(ipAddresses[0].ipAddress)')
+../.venv-lab06/bin/python sql/pg.py -f sql/03_verify.sql --db lab06
+```
 
 ```sql
 SELECT count(*) FROM orders;   -- 应为 8；T1 之后写的那 2 条不该在
