@@ -85,6 +85,9 @@ gcloud sql connect lab06-pg --user=postgres --quiet
 
 > 环境备注：WorkBuddy 的执行沙箱里 brew 调不了 `sandbox-exec`（`sandbox_apply: Operation not permitted`），装 libpq 会失败——这一步**必须在你自己的终端**做，别在 AI 侧重试。
 
+> **Studio 打不开就别耗时间，直接走路线 A**：控制台报 `Failed to load: sqladmin.googleapis.com?...` 是浏览器/网络层加载失败，跟数据库本身无关（实例仍是 RUNNABLE）。
+> 命令行反而更贴近真实生产。同一个终端里 `PGPASSWORD` 还活着，psql 会自动读取、不用手输密码；连进去后在仓库目录下 `\i sql/01_seed.sql` 一把梭即可（脚本自带 `CREATE DATABASE` + `\connect`）。
+
 **路线 B：控制台（推荐，零安装）**：打开 **Cloud SQL Studio**，把 `sql/` 里的脚本粘进去执行。零客户端、零网络排障。
 
 新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权；两条路效果一样。`sql/` 脚本里已注明 Studio 用户要跳过 `\connect` 这类 psql 元命令（先单独建库，再把数据库切到 `lab06`）。
