@@ -3,6 +3,7 @@
 -- python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z"))'
 -- 确认当前连的是【主实例 lab06-pg】的 lab06 库，别连错到恢复实例。
 
+SELECT count(*) FROM orders;   -- 事故瞬间应看到 10 行
 DROP TABLE orders;
 
 SELECT count(*) FROM orders;   -- 预期报错：relation "orders" does not exist

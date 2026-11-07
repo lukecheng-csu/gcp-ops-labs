@@ -73,6 +73,8 @@ gcloud sql instances describe lab06-pg \
 
 ### 2. 连库
 
+> **先把密码拿出来**：创建实例时 `--root-password="$PGPASSWORD"` 用的是当前终端的环境变量，换终端或用 Studio 登录前先跑 `echo $PGPASSWORD` 复制出来存好（别贴进仓库、别发聊天记录）。密码丢了可以用 `gcloud sql users set-password postgres --instance=lab06-pg --password=...` 重设。
+
 **路线 A：命令行**（需要本机有 psql）。在你自己的终端装：
 
 ```bash
@@ -87,28 +89,55 @@ gcloud sql connect lab06-pg --user=postgres --quiet
 
 新版 `gcloud sql connect` 走内置 Cloud SQL Proxy，会自动处理授权；两条路效果一样。`sql/` 脚本里已注明 Studio 用户要跳过 `\connect` 这类 psql 元命令（先单独建库，再把数据库切到 `lab06`）。
 
-### 3. 造数据
+### 3. 先打一次手动备份（建立恢复基线，别省）
 
-把 `sql/01_seed.sql` 贴进去，最后 `SELECT count(*)` 记下行数。
+实例刚建好，自动备份窗口设在 `02:00 UTC`——今天这班已经过了，下一次要等明天，所以**此刻一台备份都没有**。PITR 的原理是「拿目标时间点之前最近的一次备份当底座，再把 WAL 事务日志往前滚」，没有底座就没有恢复窗口。
+
+```bash
+gcloud sql backups create --instance=lab06-pg --description='lab06 baseline'
+gcloud sql backups list --instance=lab06-pg --format='table(id,status,startTime)'
+gcloud sql instances get-latest-recovery-time lab06-pg
+```
+
+等备份状态变成 `SUCCESS` 再往下走。这条备份在造数据**之前**，正好演示 PITR 的精髓：备份只是起点，后面几分钟的数据全靠 WAL 前滚找回来。
+
+### 4. 造数据 + 记时间点（RPO/RTO 全靠这一步）
+
+把 `sql/01_seed.sql` 贴进去，最后 `SELECT count(*)` 应为 **5**，立刻记 **T0**。
 **psql 用户**整段可贴；**Cloud SQL Studio 用户**先单独跑 `CREATE DATABASE lab06;`，在界面里把库切到 `lab06`，再从 `CREATE TABLE` 开始贴（Studio 不认 `\connect` 这类 psql 元命令）。
 
-### 4. 记时间点（这一步别省，RPO/RTO 全靠它）
+记时间统一用这条（UTC、带毫秒、带 Z，clone 只认这个格式）：
 
 ```bash
 python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00","Z"))'
 ```
 
-- **T0**：种子数据插入完成后立刻记
-- 再插几条「事故前的正常业务数据」，**等 2–3 分钟**让 WAL 归档攒起来
-- **T1**：记下来，这就是待会儿要恢复到的目标点（必须是 DROP 之前、数据都在之后）
+按顺序做，别跳步：
+
+```sql
+-- ① 事故前的正常业务数据（这些应该被恢复出来）
+INSERT INTO orders (item, amount) VALUES
+  ('tea-003', 52.00), ('herb-004', 21.50), ('tea-004', 36.00);   -- 累计 8 行
+```
+
+等 **2–3 分钟**让 WAL 归档攒起来，记 **T1**（这就是待会儿 clone 的目标点，此时 8 行都在、DROP 还没发生）。
+
+```sql
+-- ② T1 之后才写的「最后一刻订单」（恢复不到，就是 RPO 实测丢掉的部分）
+INSERT INTO orders (item, amount) VALUES
+  ('herb-005', 18.00), ('tea-005', 41.00);                       -- 累计 10 行
+SELECT count(*) FROM orders;                                      -- 确认 10
+```
 
 | 时间点 | 值（UTC） | 含义 |
 |--------|-----------|------|
-| T0 | | 种子数据完成 |
-| T1 | | 事故前的恢复目标 |
-| T_break | | 误删发生 |
+| T0 | | 种子 5 行完成 |
+| T1 | | 恢复目标：8 行都在、DROP 之前 |
+| T_break | | 误删发生（此时表里有 10 行） |
 | T_restore_start | | 发起 clone |
 | T_restore_ready | | 恢复实例可查 |
+
+> 恢复到 T1 后应该是 **8 行**：T1 之后那 2 行拿不回来，这就是 RPO 的真实数值，而不是「0」。
 
 ---
 
@@ -116,14 +145,13 @@ python3 -c 'import datetime;print(datetime.datetime.now(datetime.timezone.utc).i
 
 ### 破坏 1：DROP TABLE
 
-贴 `sql/02_break.sql`：
+贴 `sql/02_break.sql`（执行前记 **T_break**）：
 
 ```sql
+SELECT count(*) FROM orders;   -- 先确认 10 行，这就是事故瞬间总共要面对的数据
 DROP TABLE orders;
 SELECT count(*) FROM orders;   -- 预期报错：relation "orders" does not exist
 ```
-
-记下 **T_break**。这就是「生产事故」发生了。
 
 ### 修复：查窗口 → 克隆到新实例 → 验证
 
@@ -131,9 +159,10 @@ SELECT count(*) FROM orders;   -- 预期报错：relation "orders" does not exis
 # 1. 看能恢复到哪个时间范围
 gcloud sql instances get-latest-recovery-time lab06-pg
 
-# 2. 恢复到 T1（务必用 UTC、RFC3339、带毫秒 Z）
+# 2. 恢复到 T1（把 <T1> 换成你第 4 步实测记下的 UTC 时间，别照抄示例）
+#    示例格式：2026-11-07T03:50:00.000Z
 gcloud sql instances clone lab06-pg lab06-pg-restored \
-  --point-in-time '2026-11-06T04:30:00.000Z'
+  --point-in-time '<T1>'
 
 gcloud sql instances describe lab06-pg-restored --format='value(state)'
 ```
@@ -141,20 +170,20 @@ gcloud sql instances describe lab06-pg-restored --format='value(state)'
 **三条必踩的坑，先记住再排查**：
 
 1. **PITR 永远创建新实例，不能原地恢复**（官方明文：`A point-in-time recovery always creates a new instance`）。所以业务侧要么切连接串，要么把数据回灌——这正是 RTO 的大头。
-2. **T1 必须落在恢复窗口内**（`earliestRecoveryTime` ~ `latestRecoveryTime`）。刚建的实例 WAL 还没攒够，恢复到太早的时间点会失败，等几分钟再试。
-3. **时间点格式**：RFC3339 UTC，如 `2026-11-06T04:30:00.094Z`；写成本地时间（GMT+8）会直接对不上。
+2. **T1 必须落在恢复窗口内**（`earliestRecoveryTime` ~ `latestRecoveryTime`），而且窗口要有**备份基线**：新建实例没做过任何备份时，先按第 3 步打一次按需备份，否则 clone 会直接失败。恢复到太早的时间点同样会失败，等几分钟让 WAL 归档再试。
+3. **时间点格式**：RFC3339 UTC，形如 `2026-11-07T03:50:00.094Z`（仅示意格式，日期时间按当天实测）；写成本地时间（GMT+8）会直接对不上。
 
 验证（连**恢复实例**：命令行 `gcloud sql connect lab06-pg-restored --user=postgres --quiet`，或 Studio 里切到该实例，数据库选 `lab06`；贴 `sql/03_verify.sql`）：
 
 ```sql
-SELECT count(*) FROM orders;   -- 应看到误删前的行数，T1 之后新增的那几条不该在
+SELECT count(*) FROM orders;   -- 应为 8；T1 之后写的那 2 条不该在
 ```
 
 ### RPO / RTO 实测表（自己填）
 
 | 指标 | 怎么算 | 实测值 |
 |------|--------|--------|
-| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的数据量 / 时间窗口 | |
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数（本轮 2 行）/ 时间窗口 | |
 | **RTO**（多久恢复服务） | T_restore_ready − T_break | |
 | 恢复实例创建耗时 | T_restore_ready − T_restore_start | |
 | 实际可恢复粒度 | 秒级 / 分钟级（看 get-latest-recovery-time） | |
