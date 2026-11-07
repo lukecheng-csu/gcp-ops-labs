@@ -247,6 +247,54 @@ gcloud sql instances list                     # 预期空
 
 删除前确认 `--no-deletion-protection` 生效；删完把上面的 RPO/RTO 表和「What I broke and how I fixed it」补进本文件，再 commit。
 
+## 实战记录（2026-11-07 晚场）
+
+时间线（全部 UTC）：
+
+| 时间点 | 实测值 | 说明 |
+|--------|--------|------|
+| T0 | `2026-11-07T15:34:50.522Z` | 种子 5 行完成（`01_seed.sql`，pg.py `--db lab06`） |
+| T1 | `2026-11-07T15:53:18.641Z` | 恢复目标点：插 3 条后 8 行、DROP 前 |
+| T_break | `2026-11-07T16:00:33.415Z` | `02_break.sql` DROP TABLE orders（当时 10 行） |
+| T_restore_start | `2026-11-07T16:07:47.501Z` | `clone --point-in-time` 发起（operation insertTime） |
+| T_restore_ready | `2026-11-07T16:47:53.516Z` | 恢复实例 `RUNNABLE` + 白名单 patch 完成，可连接 |
+
+clone 前体检（全部通过）：
+
+- 恢复窗口：`earliestRecoveryTime 02:42:07` ~ `latestRecoveryTime 15:58:12`，T1 落在窗口内
+- 备份基线：3 个 SUCCESSFUL，最近一次 `15:27:04`（早于 T1）
+- 客户端：pg.py + `--db lab06`（Intel Mac 装不上 libpq，见「连库」一节）
+
+**当晚的坑：clone「看起来失败」其实没有失败。** gcloud 等了约 10 分钟后退出，报
+`Operation ... is taking longer than expected`——这是客户端放弃等待，不是服务器失败。
+用 `gcloud sql operations describe <operation-id> --project lukechengtest` 查，服务器端 `status: RUNNING`，
+恢复实例仍在后台建（最终 `DONE`，成功）。教训：**SQL 操作的成败只认 operations 的 status，别信 gcloud 前台的退出信息**。
+
+其他当晚踩坑：
+
+- op 未收尾时对新实例 patch 会撞 `409 Operation failed because another operation was already in progress`，等 `DONE` 再操作。
+- `gcloud beta sql operations wait` 卡死不返回（op 已 DONE 还在等）——polling `describe` 更可靠。
+- WorkBuddy 环境里大小写两组代理变量都要清（`http_proxy/https_proxy` **和** `HTTP_PROXY/HTTPS_PROXY`），
+  只清小写时 gcloud 仍会走大写那组、撞 502 Bad Gateway。
+
+**验证结果（2026-11-07T16:53Z，恢复实例 `lab06-pg-restored` / IP `136.112.17.194`，`03_verify.sql`）：**
+
+- `SELECT count(*) FROM orders` → **8 行** ✅（5 条种子 + tea-003 / herb-004 / tea-004）
+- herb-005、tea-005 不在恢复实例里——T1 之后那 2 条订单拿不回来，RPO 实测命中预期
+- 数据内容逐行核对无误（id 1~8，金额与写入时一致）
+
+### RPO / RTO 实测结果（2026-11-07 实跑）
+
+| 指标 | 怎么算 | 实测值 |
+|------|--------|--------|
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数 / 时间窗口 | **2 行 / 7 分 15 秒**（herb-005、tea-005，`15:53:18→16:00:33`） |
+| **RTO**（多久恢复服务） | T_restore_ready − T_break | **约 47 分钟**（`16:00:33→16:47:53`） |
+| 恢复实例创建耗时 | T_restore_ready − T_restore_start | 约 40 分钟（`db-f1-micro`，其中含 op 排队 + 白名单 patch） |
+| 实际可恢复粒度 | get-latest-recovery-time | 秒级窗口可指定；但落点受最近一次备份（15:27）+ WAL 覆盖限制 |
+
+**结论**：PITR 能把误删救回来，但「建新实例等 40 分钟」决定了 RTO 下限——真生产要么配只读副本/常规副本，
+要么把 RTO 缩短到分钟级靠预建 standby；RPO 则由备份频率 + WAL 归档延迟决定，秒级可指定但并非零丢失。
+
 ## 文件
 
 - `sql/01_seed.sql` — 建库、建表、种子数据
