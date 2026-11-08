@@ -457,10 +457,193 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 
 </details>
 
-## 补测实验：审计定锚 → 前滚（进行中，2026-11-08 晚开跑）
+## 明日重测速查（2026-11-09，从零起跑）
+
+> 今晚实例已删，明天从零开始。这一章是**可直接照敲的精简版**；原理、命令拆解和踩坑细节见下一章「补测实验」。
+> 预计 **2.5 小时**，其中两段 clone 各约 40 分钟且必须串行。跑不完也先执行第 8 步删环境，别过夜。
+
+### 开工前：三条自检
+
+```bash
+G() { http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= gcloud "$@"; }
+cd ~/gcp-ops-labs/06-cloudsql-pitr
+G sql instances list
+../.venv-lab06/bin/python -c "import psycopg2; print('OK')"
+```
+
+- `G()` 给 gcloud 清空代理（**大小写两组都要清**，只清小写会撞 502）；每个新终端窗口都要重新定义一次
+- `instances list` 必须是 `Listed 0 items`，不是 0 台先查是谁在计费
+- venv 若不在了：`python3 -m venv ../.venv-lab06 && ../.venv-lab06/bin/pip install psycopg2-binary`
+
+### 第 1 步 · 建实例 + 补齐开关（约 15 分钟）
+
+```bash
+export PG_PASS='新密码'
+G sql instances create lab06-pg \
+  --database-version=POSTGRES_15 --tier=db-f1-micro --region=us-central1 \
+  --availability-type=zonal --storage-size=10GB --storage-type=SSD \
+  --no-storage-auto-increase --enable-point-in-time-recovery --backup-start-time=02:00 \
+  --no-deletion-protection --root-password="$PG_PASS" --async
+until G sql instances describe lab06-pg --format='value(state)' 2>/dev/null | grep -q RUNNABLE; do sleep 30; done
+
+G sql instances patch lab06-pg --database-flags=cloudsql.enable_pgaudit=on,pgaudit.log=ddl --quiet
+G sql instances patch lab06-pg --retain-backups-on-delete --quiet
+G sql instances describe lab06-pg --format='value(state,settings.databaseFlags)'
+```
+
+> 两条 patch 撞 409 就等 30 秒重试；`describe` 里 flags 不能是空行。
+> 审计只记**打开之后**的 DDL，所以必须在 DROP 之前补齐。
+
+```bash
+for u in https://checkip.amazonaws.com https://ifconfig.me https://api.ipify.org; do
+  MYIP=$(curl -s --noproxy '*' -m 10 "$u" | tr -d '[:space:]'); [ -n "$MYIP" ] && break
+done
+echo "MYIP=[$MYIP]"
+[[ "$MYIP" =~ ^[0-9.]+$ ]] && G sql instances patch lab06-pg --authorized-networks="$MYIP/32" --quiet
+
+G sql backups create --instance=lab06-pg --description='baseline' --quiet
+G sql backups list --instance=lab06-pg
+
+export PGHOST=$(G sql instances describe lab06-pg --format='value(ipAddresses[0].ipAddress)')
+export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
+echo "PGHOST=$PGHOST"
+```
+
+> `api.ipify.org` 常返回空 → 多源兜底 + `--noproxy '*'`。**基线备份是 PITR 前提**，没有它 clone 必失败。
+> 实例 IP 每次新建都变，一律动态取，别写死。
+
+### 第 2 步 · 装扩展 + 审计预检（别跳）
+
+```bash
+../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql
+../.venv-lab06/bin/python sql/pg.py -c "CREATE EXTENSION IF NOT EXISTS pgaudit" --db lab06
+../.venv-lab06/bin/python sql/pg.py -c "CREATE TABLE audit_probe(id int); DROP TABLE audit_probe" --db lab06
+```
+
+```bash
+# 等 1~2 分钟日志投递再查
+G logging read '"DROP TABLE"' --limit=10 --freshness=15m \
+  --format='table(timestamp,protoPayload.request.command,protoPayload.request.statement)'
+```
+
+> `STATEMENT` 列出现 `DROP TABLE audit_probe` 才算链路通；搜不到先排查，**别往下 DROP**。
+> `01_seed.sql` 只跑一次（INSERT 不去重，重跑 `orders` 直接变 10 行）。扩展必须装在 `lab06` 库。
+
+### 第 3 步 · 造到 10 行（本轮不记 T1）
+
+```bash
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('tea-003',52.00),('herb-004',21.50),('tea-004',36.00); SELECT count(*) FROM orders" --db lab06
+# 上面应 8 行；等 1~2 分钟
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('herb-005',18.00),('tea-005',41.00); SELECT count(*) FROM orders" --db lab06
+# 上面应 10 行；等 2~3 分钟给 WAL 归档
+```
+
+> **SQL 不是 shell 命令**：必须 `pg.py -c "一行 SQL" --db lab06`；
+> 别带 `--` 注释，也别在命令末尾加 `# 8 行` 这类行尾注释（会被当参数传进 pg.py，今晚踩过）。
+> 这轮**故意不手工记 T1**，恢复点全靠审计日志取证。
+
+### 第 4 步 · 制造故障 + 审计定锚
+
+```bash
+../.venv-lab06/bin/python sql/pg.py -f sql/02_break.sql --db lab06
+date -u +"%Y-%m-%dT%H:%M:%SZ"
+```
+
+```bash
+# 等 1~2 分钟日志投递
+G logging read 'protoPayload.request.statement:"DROP TABLE orders"' --limit=10 --freshness=30m \
+  --format='table(timestamp,protoPayload.request.command,protoPayload.request.statement)'
+```
+
+拿到 `T_audit` 后算两个锚点（把引号里换成实际时间戳）：
+
+```bash
+T_AUDIT='2026-11-09THH:MM:SS.sssZ'
+python3 -c "import datetime,sys;t=datetime.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'));f=lambda d:(t+datetime.timedelta(seconds=d)).isoformat(timespec='milliseconds').replace('+00:00','Z');print('PITR_BEFORE='+f(-5));print('PITR_AFTER ='+f(30))" "$T_AUDIT"
+export PITR_BEFORE='<上面 BEFORE>' PITR_AFTER='<上面 AFTER>'
+```
+
+> `PITR_BEFORE` = 事故前 5 秒（应恢复出 10 行）；`PITR_AFTER` = 事故后 30 秒（DROP 被重放，表不存在）。
+> `date -u` 只用来交叉验证审计时间戳合不合理，不参与定锚。
+
+### 第 5 步 · 等恢复窗口越过锚点
+
+```bash
+G sql instances get-latest-recovery-time lab06-pg
+```
+
+> `latestRecoveryTime` 必须 ≥ `PITR_AFTER`（昨晚实测滞后 2 分 20 秒），不够就每 30 秒查一次。
+
+### 第 6 步 · clone A（约 40 分钟，串行第一发）
+
+```bash
+date -u +"%Y-%m-%dT%H:%M:%SZ"
+G sql instances clone lab06-pg lab06-pg-restored-a --point-in-time="$PITR_BEFORE" --async
+until G sql instances describe lab06-pg-restored-a --format='value(state)' 2>/dev/null | grep -q RUNNABLE; do sleep 30; done
+date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+G sql instances patch lab06-pg-restored-a --authorized-networks="$MYIP/32" --quiet
+export PGHOST=$(G sql instances describe lab06-pg-restored-a --format='value(ipAddresses[0].ipAddress)')
+../.venv-lab06/bin/python sql/pg.py -f sql/03_verify.sql --db lab06
+```
+
+> patch 撞 409 就等 30 秒重试。期望 **10 行**、`herb-005 / tea-005` 都在。
+> 前台等 10 分钟报 `taking longer than expected` 是**假失败**，别信；用 `--async` + 轮询。
+
+### 第 7 步 · clone B（再 40 分钟，必须等 A 彻底完成）
+
+```bash
+G sql instances clone lab06-pg lab06-pg-restored-b --point-in-time="$PITR_AFTER" --async
+until G sql instances describe lab06-pg-restored-b --format='value(state)' 2>/dev/null | grep -q RUNNABLE; do sleep 30; done
+G sql instances patch lab06-pg-restored-b --authorized-networks="$MYIP/32" --quiet
+export PGHOST=$(G sql instances describe lab06-pg-restored-b --format='value(ipAddresses[0].ipAddress)')
+../.venv-lab06/bin/python sql/pg.py -f sql/03_verify.sql --db lab06
+```
+
+> 同一源实例一次只容一个管理操作，第二个 clone 直接 409、不排队 → **必须串行**。
+> 期望报 `relation "orders" does not exist`。
+
+### 第 8 步 · 收尾（不过夜，跑不完也先删）
+
+```bash
+G sql instances patch lab06-pg-restored-a --no-retain-backups-on-delete --quiet
+G sql instances patch lab06-pg-restored-b --no-retain-backups-on-delete --quiet
+G sql instances patch lab06-pg --no-retain-backups-on-delete --quiet
+G sql instances delete lab06-pg-restored-a --quiet --async
+G sql instances delete lab06-pg-restored-b --quiet --async
+G sql instances delete lab06-pg --quiet --async
+G sql instances list
+```
+
+> 今晚实测：删之前关掉备份保留，备份随实例一起清掉，不会留孤儿备份继续计费。
+
+### 明天最容易翻车的 8 条
+
+| # | 坑 | 正确做法 |
+| --- | --- | --- |
+| 1 | `api.ipify.org` 返回空 → 参数变 `/32` 报错 | 多源兜底 + `--noproxy '*'`，先 `echo` 确认非空 |
+| 2 | gcloud 报 502 / 超时 | `G()` 清大小写两组代理变量 |
+| 3 | SQL 粘进 zsh 报 `parse error` | `pg.py -c "一行 SQL" --db lab06`，命令里不写注释 |
+| 4 | 重跑 `01_seed.sql` | 只跑一次，否则 8 / 10 行对照全乱 |
+| 5 | 审计没配好就 DROP，事后找不到时刻 | 实例 flag + 库级 extension + 探针预检，三步都在 DROP 前 |
+| 6 | 日志查不到 | 字段是 `protoPayload.request.statement`，不是 `textPayload` |
+| 7 | clone 假失败 / 并行 409 | `--async` + 轮询；两次 clone 严格串行 |
+| 8 | 恢复实例连不上 | 白名单不继承，每台各自 patch 一次 |
+
+| 阶段 | 预计 |
+| --- | --- |
+| 第 1~5 步（建实例到定锚） | 约 40 分钟 |
+| 第 6 步 clone A | 40~50 分钟 |
+| 第 7 步 clone B | 40~50 分钟 |
+| 第 8 步收尾 | 5~10 分钟 |
+| **合计** | **约 2.5 小时** |
+
+## 补测实验：审计定锚 → 前滚（本轮中止，2026-11-09 重跑）
 
 > 依据 Claude 给的 runbook（`练习6-审计定锚补测-runbook.md`），按本仓库现状裁剪。
-> **状态：实例已重建，取证 / 恢复未完成**。昨晚两台实例已删且未开备份保留。
+> **状态：2026-11-08 22:11 主动中止，实例已删、环境已回收，不过夜。**
+> 本轮跑到「审计链路预检通过、`orders` 5 行」就停了，恢复 / 取证 / clone 一步都没做；
+> 明天**从零重建**，直接照上面「明日重测速查」那一章敲。
 > 目的：把练习 6 从「已知时间点做恢复」升级成真实事故流程——
 > **先靠审计日志查出删表发生在哪一秒，再以该时刻为锚做前滚**，并产出 RTO 分项。
 
@@ -477,6 +660,15 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 | 基线备份 | 已有 1 个 `SUCCESSFUL`（`2026-11-08T13:09:16Z`）；恢复窗口 `13:09:33 ~ 13:34:20` |
 | 种子数据 | `01_seed.sql` 已跑完，`orders` = **5 行**（`13:33:42Z` UTC），**尚未 DROP** |
 | 审计预检 | 21:49 探针 DDL 已在 Cloud Logging 查到（`13:49:14.276Z`），**链路通** |
+| 中止点 | 22:11 核查：`orders` 仍 **5 行**、未继续造数据、未 DROP；随后关闭备份保留并删除实例 |
+
+**本轮已验证但未跑完的部分（明天不用重新摸索）**
+
+- pgAudit 两层开关可后置补齐：实例级两条 `patch` + 库级 `CREATE EXTENSION`，都实测成功
+- Cloud Logging 的 DDL 日志走 `cloudaudit.googleapis.com%2Fdata_access`，字段是
+  `protoPayload.request.statement`；探针 `DROP TABLE audit_probe` 能被查到
+- 删实例前先 `--no-retain-backups-on-delete`（实测生效），删完 `instances list = 0`、
+  `backups list` 返回 403 → 备份随实例清掉，不留孤儿备份计费
 
 ### 为什么值得单跑一轮
 
@@ -610,9 +802,10 @@ gcloud logging read '"DROP TABLE"' \
 
 ```bash
 # 审计扩展已在第 0.5 步装好；下面直接从「插 3 条」开始
-../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('tea-003',52.00),('herb-004',21.50),('tea-004',36.00); SELECT count(*) FROM orders" --db lab06   # 8 行
-# 等 1~2 分钟
-../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('herb-005',18.00),('tea-005',41.00); SELECT count(*) FROM orders" --db lab06   # 10 行
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('tea-003',52.00),('herb-004',21.50),('tea-004',36.00); SELECT count(*) FROM orders" --db lab06
+# 上面应为 8 行；等 1~2 分钟再跑下一条
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('herb-005',18.00),('tea-005',41.00); SELECT count(*) FROM orders" --db lab06
+# 上面应为 10 行
 ```
 
 沿用第二轮那套 `item/amount` 数据，昨晚 8 行的结果能直接对照。**这轮故意不手工记 T1**——
@@ -726,14 +919,15 @@ do sleep 30; done
 ### 第 7 步 · 收尾
 
 ```bash
-gcloud sql instances delete lab06-pg-restored-a --quiet
-gcloud sql instances delete lab06-pg-restored-b --quiet
-gcloud sql instances delete lab06-pg --quiet
-gcloud sql instances list                       # 确认 0 台
+# 2026-11-08 实测：删之前先把备份保留关掉，删完备份随实例一起清，不用事后找孤儿备份
+gcloud sql instances patch lab06-pg-restored-a --no-retain-backups-on-delete --quiet
+gcloud sql instances patch lab06-pg-restored-b --no-retain-backups-on-delete --quiet
+gcloud sql instances patch lab06-pg --no-retain-backups-on-delete --quiet
 
-# retain-backups 开着 → 备份还在计费，不想留就清（实例删后能否列/删需现场确认）
-gcloud sql backups list --instance=lab06-pg
-gcloud sql backups delete <ID> --instance=lab06-pg --quiet
+gcloud sql instances delete lab06-pg-restored-a --quiet --async
+gcloud sql instances delete lab06-pg-restored-b --quiet --async
+gcloud sql instances delete lab06-pg --quiet --async
+gcloud sql instances list                       # 确认 0 台
 ```
 
 ### RTO 实测分项（跑完填进「实战记录」）
