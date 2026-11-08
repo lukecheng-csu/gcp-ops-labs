@@ -87,10 +87,19 @@ python3 -m venv .venv-lab06
 
 # 每次使用：先放行本机 IP（公网直连，做完记得清）
 cd 06-cloudsql-pitr
-MYIP=$(curl -s https://api.ipify.org)
+# api.ipify.org 在本机网络常返回空；--noproxy 绕开 Clash 系统代理，多源兜底
+for u in https://checkip.amazonaws.com https://ifconfig.me https://api.ipify.org; do
+  MYIP=$(curl -s --noproxy '*' -m 10 "$u" | tr -d '[:space:]')
+  [ -n "$MYIP" ] && break
+done
+echo "MYIP=[$MYIP]"
+[[ "$MYIP" =~ ^[0-9.]+$ ]] && echo "IP 合法，继续" || echo "没拿到IP，别往下跑"
 gcloud sql instances patch lab06-pg --authorized-networks="$MYIP/32" --quiet
 
-export PGHOST=136.65.84.201 PGUSER=postgres PGPASSWORD='<你的密码>' PGDATABASE=postgres
+# 实例 IP 每次新建都会变，别写死，动态取
+export PGHOST=$(gcloud sql instances describe lab06-pg --format='value(ipAddresses[0].ipAddress)')
+export PGUSER=postgres PGPASSWORD='<你的密码>' PGDATABASE=postgres
+echo "PGHOST=$PGHOST"
 ../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql
 ```
 
@@ -251,7 +260,7 @@ gcloud sql instances list                     # 预期空
 ```
 
 删除前确认 `--no-deletion-protection` 生效；删完把上面的 RPO/RTO 表和「What I broke and how I fixed it」补进本文件，再 commit。
-若跑了「补测实验：审计定锚 → 前滚」，那里有 **3 台** `lab06b-*` 要删，且开了备份保留、还需手动清备份，见该节第 7 步。
+若跑了「补测实验：审计定锚 → 前滚」，那里有 **3 台** `lab06-pg-*` 要删，且开了备份保留、还需手动清备份，见该节第 7 步。
 
 ## 实战记录（2026-11-07 晚场）
 
@@ -448,12 +457,23 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 
 </details>
 
-## 补测实验：审计定锚 → 前滚（待执行）
+## 补测实验：审计定锚 → 前滚（进行中，2026-11-08 晚开跑）
 
 > 依据 Claude 给的 runbook（`练习6-审计定锚补测-runbook.md`），按本仓库现状裁剪。
-> **状态：设计完成、尚未实测**——昨晚两台实例已删且未开备份保留，本轮必须重建。
+> **状态：实例已重建，取证 / 恢复未完成**。昨晚两台实例已删且未开备份保留。
 > 目的：把练习 6 从「已知时间点做恢复」升级成真实事故流程——
 > **先靠审计日志查出删表发生在哪一秒，再以该时刻为锚做前滚**，并产出 RTO 分项。
+
+**本轮实测起点（2026-11-08 晚，用户终端）**
+
+| 项 | 实际值 |
+| --- | --- |
+| 实例名 | `lab06-pg`（沿用昨晚同名，重建后是全新实例） |
+| 实例公网 IP | `136.113.57.132`（每次新建都变，命令里一律动态取） |
+| 配置 | POSTGRES_15 / db-f1-micro / us-central1-f / ZONAL / PITR=True |
+| 出口 IP（白名单） | `36.148.251.209/32` |
+| 取 IP 的坑 | `api.ipify.org` 又返回空；`--noproxy '*'` + 多源兜底才拿到非空 IP |
+| **缺的开关** | 建实例时**没带** pgAudit flags 和 `--retain-backups-on-delete`，见第 0 步「分支 B」补齐 |
 
 ### 为什么值得单跑一轮
 
@@ -465,7 +485,7 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 
 ### 成本与时间红线（先看这条）
 
-- 要建 **3 台** `db-f1-micro`：源 `lab06b-pg` + 恢复 A `lab06b-restored-a` + 恢复 B `lab06b-restored-b`
+- 要建 **3 台** `db-f1-micro`：源 `lab06-pg` + 恢复 A `lab06-pg-restored-a` + 恢复 B `lab06-pg-restored-b`
 - 两次 clone **必须串行**（同一实例一次只容一个管理操作，第二个直接 409、不排队），
   每轮约 40 分钟 → 整轮预留 **2 小时以上**
 - 三台都计费；本轮开 `--retain-backups-on-delete`，**删完实例备份仍按策略计费**，要手动清
@@ -476,7 +496,7 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 ```bash
 export PG_PASS='<你的密码>'
 
-gcloud sql instances create lab06b-pg \
+gcloud sql instances create lab06-pg \
   --database-version=POSTGRES_15 --tier=db-f1-micro \
   --region=us-central1 --availability-type=zonal \
   --storage-size=10GB --storage-type=SSD --no-storage-auto-increase \
@@ -486,20 +506,43 @@ gcloud sql instances create lab06b-pg \
   --no-deletion-protection --root-password="$PG_PASS"
 ```
 
+**分支 B（本轮实际走这条）：实例已经用老命令建好了，不用删了重建。** `patch` 能补这两个开关：
+
+```bash
+# 改 database flags 可能触发实例重启 1–2 分钟，等 RUNNABLE 再连
+gcloud sql instances patch lab06-pg \
+  --database-flags=cloudsql.enable_pgaudit=on,pgaudit.log=ddl --quiet
+gcloud sql instances patch lab06-pg --retain-backups-on-delete --quiet
+
+# 确认 flag 真的挂上
+gcloud sql instances describe lab06-pg --format='value(state,settings.databaseFlags)'
+```
+
+> 若第二条 `--retain-backups-on-delete` 报不支持，跳过即可——它只影响收尾后的备份保留，
+> 不影响审计定锚主流程。`gcloud` 撞代理报 502 时，命令前加
+> `http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ` 清空变量再跑。
+>
+> ⚠️ **必须在 DROP 之前补完并装好扩展**（见第 1 步）。审计只记录打开之后发生的 DDL，
+> 事后加 flag 找不回已经发生的删表。本轮此刻还没造数据、没 DROP，来得及。
+
 三个新开关：`--retain-backups-on-delete`（删实例后备份留着，以后犯错有退路）、
 `cloudsql.enable_pgaudit=on`（打开审计扩展能力）、`pgaudit.log=ddl`（**只记建表/删表/改表**，
 日志量极小、成本可忽略，够定位删表）。`--database-flags` 里逗号是分隔符，写成两个独立
 `key=value`，`=` 前后别加空格，否则报 `Invalid flag`。
 
 ```bash
-# 白名单（用真实出口 IP，别走代理）
-MYIP=$(curl --noproxy '*' -s https://ifconfig.me); echo "$MYIP"
-gcloud sql instances patch lab06b-pg --authorized-networks="$MYIP/32" --quiet
+# 白名单（多源兜底 + 绕开代理；单个源常返回空）
+for u in https://checkip.amazonaws.com https://ifconfig.me https://api.ipify.org; do
+  MYIP=$(curl -s --noproxy '*' -m 10 "$u" | tr -d '[:space:]')
+  [ -n "$MYIP" ] && break
+done
+echo "MYIP=[$MYIP]"
+[[ "$MYIP" =~ ^[0-9.]+$ ]] && gcloud sql instances patch lab06-pg --authorized-networks="$MYIP/32" --quiet
 
 # 手动备份打底：PITR 没有基线备份必失败
-gcloud sql backups create --instance=lab06b-pg --description='lab06b baseline' --quiet
+gcloud sql backups create --instance=lab06-pg --description='lab06 baseline' --quiet
 
-export PGHOST=$(gcloud sql instances describe lab06b-pg --format='value(ipAddresses[0].ipAddress)')
+export PGHOST=$(gcloud sql instances describe lab06-pg --format='value(ipAddresses[0].ipAddress)')
 export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
 ```
 
@@ -522,7 +565,7 @@ export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
 只用于后面交叉验证审计时间戳合不合理。再等 **2~3 分钟**给 WAL 归档时间。
 
 > **退路**：若 `CREATE EXTENSION` 报「扩展不存在 / 权限不足」，改用实例级审计
-> `gcloud sql instances patch lab06b-pg --database-flags=log_statement=ddl`（不需要扩展），
+> `gcloud sql instances patch lab06-pg --database-flags=log_statement=ddl`（不需要扩展），
 > 第 3 步照样搜 `DROP TABLE`，定锚逻辑完全不变。
 
 ### 第 2 步 · 制造故障
@@ -540,14 +583,14 @@ Logs Explorer 查询：
 
 ```
 resource.type="cloudsql_database"
-resource.labels.database_id="lukechengtest:lab06b-pg"
+resource.labels.database_id="lukechengtest:lab06-pg"
 "DROP TABLE"
 ```
 
 命令行等价：
 
 ```bash
-gcloud logging read 'resource.type="cloudsql_database" AND resource.labels.database_id="lukechengtest:lab06b-pg" AND "DROP TABLE"' \
+gcloud logging read 'resource.type="cloudsql_database" AND resource.labels.database_id="lukechengtest:lab06-pg" AND "DROP TABLE"' \
   --limit=10 --freshness=30m \
   --format='table(timestamp, textPayload, jsonPayload.message)'
 ```
@@ -557,7 +600,7 @@ pgAudit 的 DDL 行形如 `AUDIT: SESSION,1,1,DDL,DROP TABLE,...`，取那条的
 
 **没查到日志的排查顺序（现场确认清单）**
 
-1. `gcloud sql instances describe lab06b-pg --format='value(settings.databaseFlags)'` — flag 在不在
+1. `gcloud sql instances describe lab06-pg --format='value(settings.databaseFlags)'` — flag 在不在
 2. `CREATE EXTENSION` 是否装在 `lab06` 库（不是 `postgres` 库）
 3. 控制台 IAM → Audit Logs：Cloud SQL 的 Data Access 日志是否开启（部分项目默认关）
 4. 日志投递有 1–2 分钟延迟，等一下再查
@@ -582,9 +625,9 @@ DROP 刚发生那两分钟 `latestRecoveryTime` 还没推过去，直接 clone �
 （`requested point in time is not available`）。轮询等，目标要能盖住 `PITR_AFTER`：
 
 ```bash
-until gcloud sql instances get-latest-recovery-time lab06b-pg \
+until gcloud sql instances get-latest-recovery-time lab06-pg \
       --format='value(latestRecoveryTime)' | awk -v t="$PITR_AFTER" '{exit !($1 >= t)}'
-do echo "window=$(gcloud sql instances get-latest-recovery-time lab06b-pg --format='value(latestRecoveryTime)') waiting..."; sleep 30; done
+do echo "window=$(gcloud sql instances get-latest-recovery-time lab06-pg --format='value(latestRecoveryTime)') waiting..."; sleep 30; done
 echo "window ready"
 ```
 
@@ -595,15 +638,15 @@ echo "window ready"
 
 ```bash
 date -u +"%Y-%m-%dT%H:%M:%SZ"     # T_restoreA_start
-gcloud sql instances clone lab06b-pg lab06b-restored-a --point-in-time="$PITR_BEFORE" --async
+gcloud sql instances clone lab06-pg lab06-pg-restored-a --point-in-time="$PITR_BEFORE" --async
 # --async 避开前台 10 分钟 "taking longer than expected"；成败只认 operations describe
-until gcloud sql instances describe lab06b-restored-a --format='value(state)' 2>/dev/null | grep -q RUNNABLE
+until gcloud sql instances describe lab06-pg-restored-a --format='value(state)' 2>/dev/null | grep -q RUNNABLE
 do sleep 30; done
 date -u +"%Y-%m-%dT%H:%M:%SZ"     # T_restoreA_ready
 
 # 白名单不继承；若撞 409，等 A 的 operation DONE 再 patch（昨晚踩过）
-gcloud sql instances patch lab06b-restored-a --authorized-networks="$MYIP/32" --quiet
-export PGHOST=$(gcloud sql instances describe lab06b-restored-a --format='value(ipAddresses[0].ipAddress)')
+gcloud sql instances patch lab06-pg-restored-a --authorized-networks="$MYIP/32" --quiet
+export PGHOST=$(gcloud sql instances describe lab06-pg-restored-a --format='value(ipAddresses[0].ipAddress)')
 ../.venv-lab06/bin/python sql/pg.py -f sql/03_verify.sql --db lab06
 ```
 
@@ -612,8 +655,8 @@ export PGHOST=$(gcloud sql instances describe lab06b-restored-a --format='value(
 ### 第 6 步 · 恢复 B：clone 到 DROP 之后（应无表）—— 必须等 A 完成
 
 ```bash
-gcloud sql instances clone lab06b-pg lab06b-restored-b --point-in-time="$PITR_AFTER" --async
-until gcloud sql instances describe lab06b-restored-b --format='value(state)' 2>/dev/null | grep -q RUNNABLE
+gcloud sql instances clone lab06-pg lab06-pg-restored-b --point-in-time="$PITR_AFTER" --async
+until gcloud sql instances describe lab06-pg-restored-b --format='value(state)' 2>/dev/null | grep -q RUNNABLE
 do sleep 30; done
 ```
 
@@ -623,14 +666,14 @@ do sleep 30; done
 ### 第 7 步 · 收尾
 
 ```bash
-gcloud sql instances delete lab06b-restored-a --quiet
-gcloud sql instances delete lab06b-restored-b --quiet
-gcloud sql instances delete lab06b-pg --quiet
+gcloud sql instances delete lab06-pg-restored-a --quiet
+gcloud sql instances delete lab06-pg-restored-b --quiet
+gcloud sql instances delete lab06-pg --quiet
 gcloud sql instances list                       # 确认 0 台
 
 # retain-backups 开着 → 备份还在计费，不想留就清（实例删后能否列/删需现场确认）
-gcloud sql backups list --instance=lab06b-pg
-gcloud sql backups delete <ID> --instance=lab06b-pg --quiet
+gcloud sql backups list --instance=lab06-pg
+gcloud sql backups delete <ID> --instance=lab06-pg --quiet
 ```
 
 ### RTO 实测分项（跑完填进「实战记录」）
