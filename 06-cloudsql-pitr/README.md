@@ -1,6 +1,6 @@
 # 练习 6：Cloud SQL（PostgreSQL）时间点恢复 PITR
 
-> 路线图第四节。交付物：**实测 RPO/RTO 的一次真实 PITR 恢复**。
+> 路线图第四节。交付物：**实测 RPO/RTO 的一次真实 PITR 恢复**。  
 > 铁律：先跑通 → 再破坏-修复；**不在免费额度，练完立刻删**。
 
 ## 为什么这练习值钱
@@ -42,6 +42,8 @@ export PATH="/usr/local/opt/libpq/bin:$PATH"
 ```
 
 > 练习 6 用 gcloud 手搓，不复用练习 4/5 的 Terraform：这练的是「备份容灾」，不是 IaC。把注意力放在数据能不能回来。
+
+
 
 ---
 
@@ -104,8 +106,10 @@ export PATH="$(brew --prefix libpq)/bin:$PATH"
 gcloud sql connect lab06-pg --user=postgres --quiet
 ```
 
-> **2026-11-07 实测：Intel Mac 上这条路走不通。** Homebrew 自 2026-09 起把 macOS Intel 降为 Tier 3，不再提供该配置的瓶子；`libpq` 依赖的 `icu4c@79` 只能源码编译，而你机器上的 Command Line Tools 16.4 编不过（`stubdata.cpp` 报 `#include <memory>` 相关错误，`make[1]: *** [stubdata.o] Error 1`）。
+> **2026-11-07 实测：Intel Mac 上这条路走不通。** Homebrew 自 2026-09 起把 macOS Intel 降为 Tier 3，不再提供该配置的瓶子；`libpq` 依赖的 `icu4c@79` 只能源码编译，而你机器上的 Command Line Tools 16.4 编不过（`stubdata.cpp` 报 `#include <memory>` 相关错误，`make[1]: *** [stubdata.o] Error 1`）。  
 > 想装真 psql 只有两条路：① 升 CLT 到 26.3（系统设置里更新，或 `sudo rm -rf /Library/Developer/CommandLineTools && sudo xcode-select --install`，要几个 G）；② 换 MacPorts。都不急，练习用路线 C 就行。
+
+
 
 > 环境备注：WorkBuddy 的执行沙箱里 brew 调不了 `sandbox-exec`（`sandbox_apply: Operation not permitted`），装 libpq 会失败——这一步**必须在你自己的终端**做，别在 AI 侧重试。
 
@@ -127,7 +131,7 @@ gcloud sql instances get-latest-recovery-time lab06-pg
 
 ### 4. 造数据 + 记时间点（RPO/RTO 全靠这一步）
 
-把 `sql/01_seed.sql` 整段跑一遍（`../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql`），最后 `SELECT count(*)` 应为 **5**，立刻记 **T0**。
+把 `sql/01_seed.sql` 整段跑一遍（`../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql`），最后 `SELECT count(*)` 应为 **5**，立刻记 **T0**。  
 **pg.py / psql 用户**整段可贴（`\connect` 会被识别）；**Cloud SQL Studio 用户**先单独跑 `CREATE DATABASE lab06;`，在界面里把库切到 `lab06`，再从 `CREATE TABLE` 开始贴（Studio 不认 `\connect` 这类 psql 元命令）。
 
 记时间统一用这条（UTC、带毫秒、带 Z，clone 只认这个格式）：
@@ -153,13 +157,13 @@ INSERT INTO orders (item, amount) VALUES
 SELECT count(*) FROM orders;                                      -- 确认 10
 ```
 
-| 时间点 | 值（UTC） | 含义 |
-|--------|-----------|------|
-| T0 | | 种子 5 行完成 |
-| T1 | | 恢复目标：8 行都在、DROP 之前 |
-| T_break | | 误删发生（此时表里有 10 行） |
-| T_restore_start | | 发起 clone |
-| T_restore_ready | | 恢复实例可查 |
+| 时间点             | 值（UTC） | 含义                 |
+| --------------- | ------ | ------------------ |
+| T0              |        | 种子 5 行完成           |
+| T1              |        | 恢复目标：8 行都在、DROP 之前 |
+| T_break         |        | 误删发生（此时表里有 10 行）   |
+| T_restore_start |        | 发起 clone           |
+| T_restore_ready |        | 恢复实例可查             |
 
 > 恢复到 T1 后应该是 **8 行**：T1 之后那 2 行拿不回来，这就是 RPO 的真实数值，而不是「0」。
 
@@ -214,12 +218,12 @@ SELECT count(*) FROM orders;   -- 应为 8；T1 之后写的那 2 条不该在
 
 ### RPO / RTO 实测表（自己填）
 
-| 指标 | 怎么算 | 实测值 |
-|------|--------|--------|
-| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数（本轮 2 行）/ 时间窗口 | |
-| **RTO**（多久恢复服务） | T_restore_ready − T_break | |
-| 恢复实例创建耗时 | T_restore_ready − T_restore_start | |
-| 实际可恢复粒度 | 秒级 / 分钟级（看 get-latest-recovery-time） | |
+| 指标               | 怎么算                                  | 实测值 |
+| ---------------- | ------------------------------------ | --- |
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数（本轮 2 行）/ 时间窗口   |     |
+| **RTO**（多久恢复服务）  | T_restore_ready − T_break            |     |
+| 恢复实例创建耗时         | T_restore_ready − T_restore_start    |     |
+| 实际可恢复粒度          | 秒级 / 分钟级（看 get-latest-recovery-time） |     |
 
 **结论要回答的问题**：如果这是真生产，丢了什么、停了多久、下一步怎么把 RTO 压下来（预案脚本、连接串自动切换、只读副本等）。
 
@@ -251,13 +255,13 @@ gcloud sql instances list                     # 预期空
 
 时间线（全部 UTC）：
 
-| 时间点 | 实测值 | 说明 |
-|--------|--------|------|
-| T0 | `2026-11-07T15:34:50.522Z` | 种子 5 行完成（`01_seed.sql`，pg.py `--db lab06`） |
-| T1 | `2026-11-07T15:53:18.641Z` | 恢复目标点：插 3 条后 8 行、DROP 前 |
-| T_break | `2026-11-07T16:00:33.415Z` | `02_break.sql` DROP TABLE orders（当时 10 行） |
+| 时间点             | 实测值                        | 说明                                               |
+| --------------- | -------------------------- | ------------------------------------------------ |
+| T0              | `2026-11-07T15:34:50.522Z` | 种子 5 行完成（`01_seed.sql`，pg.py `--db lab06`）       |
+| T1              | `2026-11-07T15:53:18.641Z` | 恢复目标点：插 3 条后 8 行、DROP 前                          |
+| T_break         | `2026-11-07T16:00:33.415Z` | `02_break.sql` DROP TABLE orders（当时 10 行）        |
 | T_restore_start | `2026-11-07T16:07:47.501Z` | `clone --point-in-time` 发起（operation insertTime） |
-| T_restore_ready | `2026-11-07T16:47:53.516Z` | 恢复实例 `RUNNABLE` + 白名单 patch 完成，可连接 |
+| T_restore_ready | `2026-11-07T16:47:53.516Z` | 恢复实例 `RUNNABLE` + 白名单 patch 完成，可连接               |
 
 clone 前体检（全部通过）：
 
@@ -265,9 +269,9 @@ clone 前体检（全部通过）：
 - 备份基线：3 个 SUCCESSFUL，最近一次 `15:27:04`（早于 T1）
 - 客户端：pg.py + `--db lab06`（Intel Mac 装不上 libpq，见「连库」一节）
 
-**当晚的坑：clone「看起来失败」其实没有失败。** gcloud 等了约 10 分钟后退出，报
-`Operation ... is taking longer than expected`——这是客户端放弃等待，不是服务器失败。
-用 `gcloud sql operations describe <operation-id> --project lukechengtest` 查，服务器端 `status: RUNNING`，
+**当晚的坑：clone「看起来失败」其实没有失败。** gcloud 等了约 10 分钟后退出，报  
+`Operation ... is taking longer than expected`——这是客户端放弃等待，不是服务器失败。  
+用 `gcloud sql operations describe <operation-id> --project lukechengtest` 查，服务器端 `status: RUNNING`，  
 恢复实例仍在后台建（最终 `DONE`，成功）。教训：**SQL 操作的成败只认 operations 的 status，别信 gcloud 前台的退出信息**。
 
 其他当晚踩坑：
@@ -275,6 +279,8 @@ clone 前体检（全部通过）：
 - op 未收尾时对新实例 patch 会撞 `409 Operation failed because another operation was already in progress`，等 `DONE` 再操作。
 - `gcloud beta sql operations wait` 卡死不返回（op 已 DONE 还在等）——polling `describe` 更可靠。
 - WorkBuddy 环境里大小写两组代理变量都要清（`http_proxy/https_proxy` **和** `HTTP_PROXY/HTTPS_PROXY`），
+
+
   只清小写时 gcloud 仍会走大写那组、撞 502 Bad Gateway。
 
 **验证结果（2026-11-07T16:53Z，恢复实例 `lab06-pg-restored` / IP `136.112.17.194`，`03_verify.sql`）：**
@@ -285,15 +291,44 @@ clone 前体检（全部通过）：
 
 ### RPO / RTO 实测结果（2026-11-07 实跑）
 
+
 | 指标 | 怎么算 | 实测值 |
 |------|--------|--------|
-| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数 / 时间窗口 | **2 行 / 7 分 15 秒**（herb-005、tea-005，`15:53:18→16:00:33`） |
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数 / 时间窗口 | **2 行 / 7 分 15 秒**（herb-005、tea-005，`15:53:18→16:00:33`）。**这是「选择恢复到 T1」的结果，不是 PITR 的物理下限** |
 | **RTO**（多久恢复服务） | T_restore_ready − T_break | **约 47 分钟**（`16:00:33→16:47:53`） |
 | 恢复实例创建耗时 | T_restore_ready − T_restore_start | 约 40 分钟（`db-f1-micro`，其中含 op 排队 + 白名单 patch） |
 | 实际可恢复粒度 | get-latest-recovery-time | 秒级窗口可指定；但落点受最近一次备份（15:27）+ WAL 覆盖限制 |
 
 **结论**：PITR 能把误删救回来，但「建新实例等 40 分钟」决定了 RTO 下限——真生产要么配只读副本/常规副本，
-要么把 RTO 缩短到分钟级靠预建 standby；RPO 则由备份频率 + WAL 归档延迟决定，秒级可指定但并非零丢失。
+要么把 RTO 缩短到分钟级靠预建 standby；RPO 则由**你能确认事故时刻的精度**决定，而不是备份频率：
+事故点越清楚，恢复点就能贴得越近，丢得越少。
+
+### FAQ：能不能恢复到 T_break，把最后 2 条也找回来？
+
+**能，而且这正是 PITR 的正确用法。** 本轮 `T_break = 16:00:33.415Z` 是「先打印时间、再粘贴执行
+`02_break.sql`」记下的，所以那一刻 DROP 还没发生，表里是 **10 行**。用同一份基线备份 +
+WAL 前滚到 `16:00:33.415Z`，最后 2 条（herb-005 / tea-005）会被重放出来，10 行全在：
+
+```bash
+gcloud sql instances clone lab06-pg lab06-pg-full --point-in-time='2026-11-07T16:00:33.415Z'
+```
+
+三条必须记住的边界：
+
+1. **恢复点要卡在 DROP 之前，不是越新越好。** `DROP TABLE` 在 PostgreSQL 里也是写 WAL 的事务，
+   前滚会把它一起重放；选在 DROP 之后，新实例里 `orders` 表照样不存在。PITR 不是「回到最新」，
+   是「回到事故前一秒」。
+2. **`latestRecoveryTime` 有滞后。** 16:00:33 查到的窗口只到 `15:58:12`（WAL 归档滞后约 2 分 20 秒），
+   当时立刻 clone 会被拒；要等窗口推进过 T_break（约 16:02 之后）再发起。WAL 默认保留 7 天，
+   等一等不会丢数据。
+3. **生产里最难的不是技术，是不知道事故几点发生。** 所以真实故障通常退回到一个「确认安全」的
+   时间点，宁可多丢一点；本轮故意选 T1 就是在演示这个保守决策。**若事故时刻精确已知，
+   RPO 可以趋近于 0**——本表的「2 行」不是 PITR 的能力上限。
+
+> 2026-11-08 追记：本轮两台实例当晚已删除，备份与 WAL 日志随实例一并清除
+> （创建时未加 `--retain-backups-on-delete`），因此**无法再补一次 clone 到 T_break 做对照实验**。
+> 下轮重跑时建议加餐：同一实例连 clone 两次（T1 与 T_break），分别连进去 `count(*)`，
+> 直接看到 8 行 vs 10 行的差别——这是理解「恢复点决定 RPO」最直观的一组对照。
 
 ## 文件
 
