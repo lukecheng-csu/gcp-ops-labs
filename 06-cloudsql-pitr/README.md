@@ -476,6 +476,7 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 | **审计开关** | 21:40 两次 `patch` 补齐：`cloudsql.enable_pgaudit=on` + `pgaudit.log=ddl` 已挂（describe 确认 `RUNNABLE`），`retainBackupsOnDelete=true`；**pgaudit 扩展待装**（见第 0.5 步） |
 | 基线备份 | 已有 1 个 `SUCCESSFUL`（`2026-11-08T13:09:16Z`）；恢复窗口 `13:09:33 ~ 13:34:20` |
 | 种子数据 | `01_seed.sql` 已跑完，`orders` = **5 行**（`13:33:42Z` UTC），**尚未 DROP** |
+| 审计预检 | 21:49 探针 DDL 已在 Cloud Logging 查到（`13:49:14.276Z`），**链路通** |
 
 ### 为什么值得单跑一轮
 
@@ -570,15 +571,23 @@ export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
 # 探针：建一张无关小表再删掉，制造一条可搜的 DROP TABLE（不影响 orders）
 ../.venv-lab06/bin/python sql/pg.py -c "CREATE TABLE audit_probe(id int); DROP TABLE audit_probe" --db lab06
 
-# 等 1–2 分钟让日志投递，先用宽条件搜
-gcloud logging read 'resource.type="cloudsql_database" AND "DROP TABLE"' \
-  --limit=10 --freshness=10m --format='table(timestamp,textPayload,jsonPayload.message)'
+# 等 1–2 分钟让日志投递，先看 STATEMENT 列
+gcloud logging read '"DROP TABLE"' \
+  --limit=10 --freshness=15m \
+  --format='table(timestamp,protoPayload.request.command,protoPayload.request.statement)'
 ```
 
-看到带 `AUDIT:` 或 `statement: DROP TABLE` 的行 → 链路通，才继续第 1 步。
+`STATEMENT` 列出现 `DROP TABLE audit_probe` → 链路通，才继续第 1 步。
 搜不到按第 3 步「现场确认清单」排查；`gcloud` 撞代理 502 时前面加
 `http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= `。
-探针那条 DROP 时间早于事故，第 3 步取**最后一条** DROP TABLE 即可，不会被它干扰。
+
+**实测（21:49，本项目）**：探针日志 `timestamp = 2026-11-08T13:49:14.276Z`，
+`logName = projects/lukechengtest/logs/cloudaudit.googleapis.com%2Fdata_access`，
+`resource.type = cloudsql_database`；内容在 `protoPayload.request.command = DROP TABLE`、
+`protoPayload.request.statement = DROP TABLE audit_probe`。
+⚠️ **不是 `textPayload` / `jsonPayload.message`** —— 那两列实测全空，按 pgAudit 通用文档
+猜的字段在本项目不成立。这也说明本项目 Cloud SQL 的 **Data Access 审计日志已开启**，
+不用额外去 IAM 开。探针那条 DROP 早于事故，第 3 步按 `statement` 区分即可。
 
 > 踩坑（21:40 实测）：命令后面别跟行尾注释。把 `... --db lab06   # 扩展按库生效` 整行
 > 贴进 zsh，`#` 后面会被当成参数传给 `pg.py`，报 `unrecognized arguments: # 扩展按库生效`。
@@ -622,31 +631,36 @@ Logs Explorer 查询：
 ```
 resource.type="cloudsql_database"
 resource.labels.database_id="lukechengtest:lab06-pg"
-"DROP TABLE"
+protoPayload.request.statement:"DROP TABLE orders"
 ```
 
 命令行等价：
 
 ```bash
-gcloud logging read 'resource.type="cloudsql_database" AND resource.labels.database_id="lukechengtest:lab06-pg" AND "DROP TABLE"' \
+gcloud logging read 'protoPayload.request.statement:"DROP TABLE orders"' \
   --limit=10 --freshness=30m \
-  --format='table(timestamp, textPayload, jsonPayload.message)'
+  --format='table(timestamp,protoPayload.request.command,protoPayload.request.statement)'
 ```
 
-pgAudit 的 DDL 行形如 `AUDIT: SESSION,1,1,DDL,DROP TABLE,...`，取那条的 `timestamp` = **T_audit**；
-多条就认**最后一条 DROP TABLE**（建扩展 / 建表也会产生 DDL）。
+实测日志形态（本项目）：`command = DROP TABLE`、`statement = DROP TABLE orders`，
+取那条的 `timestamp` = **T_audit**。用 `statement` 带 `orders` 过滤能自动排除第 0.5 步的
+`DROP TABLE audit_probe` 探针和其他建表 DDL，**不要**靠「取最后一条」去猜。
 
 **没查到日志的排查顺序（现场确认清单）**
 
 1. `gcloud sql instances describe lab06-pg --format='value(settings.databaseFlags)'` — flag 在不在
 2. `CREATE EXTENSION` 是否装在 `lab06` 库（不是 `postgres` 库）
-3. 控制台 IAM → Audit Logs：Cloud SQL 的 Data Access 日志是否开启（部分项目默认关）
+3. 控制台 IAM → Audit Logs：Cloud SQL 的 Data Access 日志是否开启
+   （**本项目 21:49 实测已开启**，日志落在 `cloudaudit.googleapis.com%2Fdata_access`；
+   换项目要重新确认，部分项目默认关）
 4. 日志投递有 1–2 分钟延迟，等一下再查
 5. 还不行就切上面的 `log_statement=ddl` 退路
 
-> `logName` / 字段（`textPayload` vs `jsonPayload`）因项目日志路由而异，**别写死**。
-> 查不到时先拉宽看真实字段：
-> `gcloud logging read 'resource.type="cloudsql_database"' --limit=50 --freshness=30m --format=json | grep -i -E 'AUDIT|DROP'`
+> `logName` / 字段因项目日志路由而异，**别凭通用文档写死**：本轮一开始猜
+> `textPayload` + `jsonPayload.message`，结果两列全空，是拉 `--format=json` 才挖到
+> `protoPayload.request.statement`。换项目先拉宽看真实字段：
+> `gcloud logging read '"DROP TABLE"' --limit=10 --freshness=30m --format=json`
+> 再递归找含 `DROP TABLE` 的字段路径，据此写 `--format`。
 
 **锚点换算**：恢复点 = `T_audit − 5 秒`（留余量，确保落在 DROP 提交之前；毫秒级卡点容易把 DROP 一起重放进去）。
 
