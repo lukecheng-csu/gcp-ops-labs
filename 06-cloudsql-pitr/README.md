@@ -473,7 +473,9 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 | 配置 | POSTGRES_15 / db-f1-micro / us-central1-f / ZONAL / PITR=True |
 | 出口 IP（白名单） | `36.148.251.209/32` |
 | 取 IP 的坑 | `api.ipify.org` 又返回空；`--noproxy '*'` + 多源兜底才拿到非空 IP |
-| **缺的开关** | 建实例时**没带** pgAudit flags 和 `--retain-backups-on-delete`，见第 0 步「分支 B」补齐 |
+| **缺的开关** | 建实例时**没带** pgAudit flags 和 `--retain-backups-on-delete`；21:35 实测 `settings.databaseFlags` 为空、lab06 库无 pgaudit 扩展 → **分支 B 尚未执行，DROP 前必须补齐** |
+| 基线备份 | 已有 1 个 `SUCCESSFUL`（`2026-11-08T13:09:16Z`）；恢复窗口 `13:09:33 ~ 13:34:20` |
+| 种子数据 | `01_seed.sql` 已跑完，`orders` = **5 行**（`13:33:42Z` UTC），**尚未 DROP** |
 
 ### 为什么值得单跑一轮
 
@@ -509,14 +511,19 @@ gcloud sql instances create lab06-pg \
 **分支 B（本轮实际走这条）：实例已经用老命令建好了，不用删了重建。** `patch` 能补这两个开关：
 
 ```bash
-# 改 database flags 可能触发实例重启 1–2 分钟，等 RUNNABLE 再连
+# 一次 patch 把 3 个 flag + 备份保留都带上（--database-flags 是覆盖式，必须一次列全）
+# log_statement=ddl 是双保险：不需要扩展也能把 DROP TABLE 写进实例日志
+# 改 flags 可能触发实例重启 1–2 分钟，等 RUNNABLE 再连
 gcloud sql instances patch lab06-pg \
-  --database-flags=cloudsql.enable_pgaudit=on,pgaudit.log=ddl --quiet
-gcloud sql instances patch lab06-pg --retain-backups-on-delete --quiet
+  --database-flags=cloudsql.enable_pgaudit=on,pgaudit.log=ddl,log_statement=ddl \
+  --retain-backups-on-delete --quiet
 
-# 确认 flag 真的挂上
+# 确认 flag 真的挂上（不能是空行）
 gcloud sql instances describe lab06-pg --format='value(state,settings.databaseFlags)'
 ```
+
+> 若 `pgaudit.log` 报 `Invalid flag`，从 `--database-flags` 里去掉它，改在库级设：
+> `../.venv-lab06/bin/python sql/pg.py -c "ALTER DATABASE lab06 SET pgaudit.log='ddl'" --db lab06`
 
 > 若第二条 `--retain-backups-on-delete` 报不支持，跳过即可——它只影响收尾后的备份保留，
 > 不影响审计定锚主流程。`gcloud` 撞代理报 502 时，命令前加
@@ -546,15 +553,38 @@ export PGHOST=$(gcloud sql instances describe lab06-pg --format='value(ipAddress
 export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
 ```
 
-### 第 1 步 · 造数据 + 装审计扩展（沿用现有脚本，别另起一套）
+### 第 0.5 步 · 审计链路预检（DROP 之前，别跳过）
+
+**这轮最容易翻车的点**：DROP 完才发现日志里根本没有 `DROP TABLE`——审计只记录打开之后发生的 DDL，
+事后补 flag 找不回来。所以先用一条**探针 DDL** 验证「数据库里的 DDL → Cloud Logging」这条链是通的。
 
 ```bash
-# 01_seed.sql 会自己 CREATE DATABASE lab06；第二条里的报错「database already exists」是预期的
-../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql                       # 5 行
-
 # pgAudit 按库生效：DROP 发生在 lab06 库，扩展必须装在这个库
 ../.venv-lab06/bin/python sql/pg.py -c "CREATE EXTENSION IF NOT EXISTS pgaudit" --db lab06
+../.venv-lab06/bin/python sql/pg.py -c "SELECT extname FROM pg_extension WHERE extname='pgaudit'" --db lab06
 
+# 探针：建一张无关小表再删掉，制造一条可搜的 DROP TABLE（不影响 orders）
+../.venv-lab06/bin/python sql/pg.py -c "CREATE TABLE audit_probe(id int); DROP TABLE audit_probe" --db lab06
+
+# 等 1–2 分钟让日志投递，先用宽条件搜
+gcloud logging read 'resource.type="cloudsql_database" AND "DROP TABLE"' \
+  --limit=10 --freshness=10m --format='table(timestamp,textPayload,jsonPayload.message)'
+```
+
+看到带 `AUDIT:` 或 `statement: DROP TABLE` 的行 → 链路通，才继续第 1 步。
+搜不到按第 3 步「现场确认清单」排查；`gcloud` 撞代理 502 时前面加
+`http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= `。
+探针那条 DROP 时间早于事故，第 3 步取**最后一条** DROP TABLE 即可，不会被它干扰。
+
+### 第 1 步 · 造数据到 10 行（沿用现有脚本，别另起一套）
+
+> ⚠️ **本轮已跑过 `01_seed.sql`（5 行），别再跑第二遍**：里面的 INSERT 不去重，
+> 重跑一次 `orders` 就变 10 行，后面「8 行 / 10 行」的对照全乱。
+> 只有全新实例才需要 `../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql`；
+> 本轮直接从下面「插 3 条」开始。
+
+```bash
+# 审计扩展已在第 0.5 步装好；下面直接从「插 3 条」开始
 ../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('tea-003',52.00),('herb-004',21.50),('tea-004',36.00); SELECT count(*) FROM orders" --db lab06   # 8 行
 # 等 1~2 分钟
 ../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('herb-005',18.00),('tea-005',41.00); SELECT count(*) FROM orders" --db lab06   # 10 行
@@ -564,9 +594,10 @@ export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
 模拟真实事故里「没人知道几点出的事」。DROP 前打一个 `SELECT now()` 记作 `T_fault_hint`，
 只用于后面交叉验证审计时间戳合不合理。再等 **2~3 分钟**给 WAL 归档时间。
 
-> **退路**：若 `CREATE EXTENSION` 报「扩展不存在 / 权限不足」，改用实例级审计
-> `gcloud sql instances patch lab06-pg --database-flags=log_statement=ddl`（不需要扩展），
-> 第 3 步照样搜 `DROP TABLE`，定锚逻辑完全不变。
+> **退路**：若 `CREATE EXTENSION pgaudit` 报「扩展不存在 / 权限不足」，不用再 patch——
+> 第 0 步已同时开了 `log_statement=ddl`（实例级、不需要扩展），DDL 照样进实例日志，
+> 第 3 步搜 `DROP TABLE` 定锚的逻辑完全不变。⚠️ 别单独再跑一次
+> `--database-flags=log_statement=ddl`，它是覆盖式的，会把 pgaudit 两个 flag 冲掉。
 
 ### 第 2 步 · 制造故障
 
