@@ -251,6 +251,7 @@ gcloud sql instances list                     # 预期空
 ```
 
 删除前确认 `--no-deletion-protection` 生效；删完把上面的 RPO/RTO 表和「What I broke and how I fixed it」补进本文件，再 commit。
+若跑了「补测实验：审计定锚 → 前滚」，那里有 **3 台** `lab06b-*` 要删，且开了备份保留、还需手动清备份，见该节第 7 步。
 
 ## 实战记录（2026-11-07 晚场）
 
@@ -397,6 +398,8 @@ gcloud sql operations describe <op-id> --project lukechengtest   # 轮询到 DON
 
 ### FAQ 3：真实事故里，恢复点到底怎么定？
 
+> 这一节讲「为什么」，可直接敲的实操见下面「补测实验：审计定锚 → 前滚」。
+
 **核心认知：恢复点不是「猜」出来的，是「取证」做出来的。** 顺序是「先取证 → 定锚 → 一次 clone」，
 而不是「先 clone 几次试试」。证据源按实用性排序：
 
@@ -445,8 +448,213 @@ HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。�
 
 </details>
 
+## 补测实验：审计定锚 → 前滚（待执行）
+
+> 依据 Claude 给的 runbook（`练习6-审计定锚补测-runbook.md`），按本仓库现状裁剪。
+> **状态：设计完成、尚未实测**——昨晚两台实例已删且未开备份保留，本轮必须重建。
+> 目的：把练习 6 从「已知时间点做恢复」升级成真实事故流程——
+> **先靠审计日志查出删表发生在哪一秒，再以该时刻为锚做前滚**，并产出 RTO 分项。
+
+### 为什么值得单跑一轮
+
+| | 昨晚已做（第二轮） | 本轮补测 |
+| --- | --- | --- |
+| 恢复点怎么来 | 手工记 T1，往后退一大截 | 从 pgAudit 日志取证，只往回让 5 秒 |
+| 结果 | 8 行，丢 2 行 | A：**10 行全回来**；B：**表不存在**（DROP 被重放） |
+| 讲透的事 | PITR 能用 | **取证精度决定 RPO**；PITR 不是「回到最新」 |
+
+### 成本与时间红线（先看这条）
+
+- 要建 **3 台** `db-f1-micro`：源 `lab06b-pg` + 恢复 A `lab06b-restored-a` + 恢复 B `lab06b-restored-b`
+- 两次 clone **必须串行**（同一实例一次只容一个管理操作，第二个直接 409、不排队），
+  每轮约 40 分钟 → 整轮预留 **2 小时以上**
+- 三台都计费；本轮开 `--retain-backups-on-delete`，**删完实例备份仍按策略计费**，要手动清
+- 跑不完也先把三台删掉，别过夜
+
+### 第 0 步 · 建实例（比昨晚多 3 个开关）
+
+```bash
+export PG_PASS='<你的密码>'
+
+gcloud sql instances create lab06b-pg \
+  --database-version=POSTGRES_15 --tier=db-f1-micro \
+  --region=us-central1 --availability-type=zonal \
+  --storage-size=10GB --storage-type=SSD --no-storage-auto-increase \
+  --enable-point-in-time-recovery --backup-start-time=02:00 \
+  --retain-backups-on-delete \
+  --database-flags=cloudsql.enable_pgaudit=on,pgaudit.log=ddl \
+  --no-deletion-protection --root-password="$PG_PASS"
+```
+
+三个新开关：`--retain-backups-on-delete`（删实例后备份留着，以后犯错有退路）、
+`cloudsql.enable_pgaudit=on`（打开审计扩展能力）、`pgaudit.log=ddl`（**只记建表/删表/改表**，
+日志量极小、成本可忽略，够定位删表）。`--database-flags` 里逗号是分隔符，写成两个独立
+`key=value`，`=` 前后别加空格，否则报 `Invalid flag`。
+
+```bash
+# 白名单（用真实出口 IP，别走代理）
+MYIP=$(curl --noproxy '*' -s https://ifconfig.me); echo "$MYIP"
+gcloud sql instances patch lab06b-pg --authorized-networks="$MYIP/32" --quiet
+
+# 手动备份打底：PITR 没有基线备份必失败
+gcloud sql backups create --instance=lab06b-pg --description='lab06b baseline' --quiet
+
+export PGHOST=$(gcloud sql instances describe lab06b-pg --format='value(ipAddresses[0].ipAddress)')
+export PGUSER=postgres PGDATABASE=postgres PGPASSWORD="$PG_PASS"
+```
+
+### 第 1 步 · 造数据 + 装审计扩展（沿用现有脚本，别另起一套）
+
+```bash
+# 01_seed.sql 会自己 CREATE DATABASE lab06；第二条里的报错「database already exists」是预期的
+../.venv-lab06/bin/python sql/pg.py -f sql/01_seed.sql                       # 5 行
+
+# pgAudit 按库生效：DROP 发生在 lab06 库，扩展必须装在这个库
+../.venv-lab06/bin/python sql/pg.py -c "CREATE EXTENSION IF NOT EXISTS pgaudit" --db lab06
+
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('tea-003',52.00),('herb-004',21.50),('tea-004',36.00); SELECT count(*) FROM orders" --db lab06   # 8 行
+# 等 1~2 分钟
+../.venv-lab06/bin/python sql/pg.py -c "INSERT INTO orders (item, amount) VALUES ('herb-005',18.00),('tea-005',41.00); SELECT count(*) FROM orders" --db lab06   # 10 行
+```
+
+沿用第二轮那套 `item/amount` 数据，昨晚 8 行的结果能直接对照。**这轮故意不手工记 T1**——
+模拟真实事故里「没人知道几点出的事」。DROP 前打一个 `SELECT now()` 记作 `T_fault_hint`，
+只用于后面交叉验证审计时间戳合不合理。再等 **2~3 分钟**给 WAL 归档时间。
+
+> **退路**：若 `CREATE EXTENSION` 报「扩展不存在 / 权限不足」，改用实例级审计
+> `gcloud sql instances patch lab06b-pg --database-flags=log_statement=ddl`（不需要扩展），
+> 第 3 步照样搜 `DROP TABLE`，定锚逻辑完全不变。
+
+### 第 2 步 · 制造故障
+
+```bash
+../.venv-lab06/bin/python sql/pg.py -f sql/02_break.sql --db lab06
+date -u +"%Y-%m-%dT%H:%M:%SZ"     # T_fault 上界，只用来验审计时间戳
+```
+
+### 第 3 步 · 审计定锚（本轮核心新增）
+
+DROP 之后 `orders` 没了，但**审计日志在数据库外，还在**——这正是 FAQ 3 说的「表外证据」。
+
+Logs Explorer 查询：
+
+```
+resource.type="cloudsql_database"
+resource.labels.database_id="lukechengtest:lab06b-pg"
+"DROP TABLE"
+```
+
+命令行等价：
+
+```bash
+gcloud logging read 'resource.type="cloudsql_database" AND resource.labels.database_id="lukechengtest:lab06b-pg" AND "DROP TABLE"' \
+  --limit=10 --freshness=30m \
+  --format='table(timestamp, textPayload, jsonPayload.message)'
+```
+
+pgAudit 的 DDL 行形如 `AUDIT: SESSION,1,1,DDL,DROP TABLE,...`，取那条的 `timestamp` = **T_audit**；
+多条就认**最后一条 DROP TABLE**（建扩展 / 建表也会产生 DDL）。
+
+**没查到日志的排查顺序（现场确认清单）**
+
+1. `gcloud sql instances describe lab06b-pg --format='value(settings.databaseFlags)'` — flag 在不在
+2. `CREATE EXTENSION` 是否装在 `lab06` 库（不是 `postgres` 库）
+3. 控制台 IAM → Audit Logs：Cloud SQL 的 Data Access 日志是否开启（部分项目默认关）
+4. 日志投递有 1–2 分钟延迟，等一下再查
+5. 还不行就切上面的 `log_statement=ddl` 退路
+
+> `logName` / 字段（`textPayload` vs `jsonPayload`）因项目日志路由而异，**别写死**。
+> 查不到时先拉宽看真实字段：
+> `gcloud logging read 'resource.type="cloudsql_database"' --limit=50 --freshness=30m --format=json | grep -i -E 'AUDIT|DROP'`
+
+**锚点换算**：恢复点 = `T_audit − 5 秒`（留余量，确保落在 DROP 提交之前；毫秒级卡点容易把 DROP 一起重放进去）。
+
+```bash
+PITR_BEFORE='<T_audit 减 5 秒，RFC3339 UTC>'
+PITR_AFTER='<T_audit 加 30 秒>'
+```
+
+记下 `T_fault → T_audit` 耗时 = **取证耗时**（RTO 第一项）。
+
+### 第 4 步 · 等恢复窗口越过锚点
+
+DROP 刚发生那两分钟 `latestRecoveryTime` 还没推过去，直接 clone 会被拒
+（`requested point in time is not available`）。轮询等，目标要能盖住 `PITR_AFTER`：
+
+```bash
+until gcloud sql instances get-latest-recovery-time lab06b-pg \
+      --format='value(latestRecoveryTime)' | awk -v t="$PITR_AFTER" '{exit !($1 >= t)}'
+do echo "window=$(gcloud sql instances get-latest-recovery-time lab06b-pg --format='value(latestRecoveryTime)') waiting..."; sleep 30; done
+echo "window ready"
+```
+
+> 字符串比较对同格式 RFC3339 UTC 可用，但 `latestRecoveryTime` 常是纳秒精度、锚点是毫秒精度，
+> 边界上可能多等一轮（无害）。介意就换 python 一行转 `datetime` 再比。
+
+### 第 5 步 · 恢复 A：clone 到 DROP 之前（应 10 行）
+
+```bash
+date -u +"%Y-%m-%dT%H:%M:%SZ"     # T_restoreA_start
+gcloud sql instances clone lab06b-pg lab06b-restored-a --point-in-time="$PITR_BEFORE" --async
+# --async 避开前台 10 分钟 "taking longer than expected"；成败只认 operations describe
+until gcloud sql instances describe lab06b-restored-a --format='value(state)' 2>/dev/null | grep -q RUNNABLE
+do sleep 30; done
+date -u +"%Y-%m-%dT%H:%M:%SZ"     # T_restoreA_ready
+
+# 白名单不继承；若撞 409，等 A 的 operation DONE 再 patch（昨晚踩过）
+gcloud sql instances patch lab06b-restored-a --authorized-networks="$MYIP/32" --quiet
+export PGHOST=$(gcloud sql instances describe lab06b-restored-a --format='value(ipAddresses[0].ipAddress)')
+../.venv-lab06/bin/python sql/pg.py -f sql/03_verify.sql --db lab06
+```
+
+期望 **10 行**，`herb-005 / tea-005` 都在。记 `T_restoreA_start → 验证通过` = **恢复本体**（RTO 第二项）。
+
+### 第 6 步 · 恢复 B：clone 到 DROP 之后（应无表）—— 必须等 A 完成
+
+```bash
+gcloud sql instances clone lab06b-pg lab06b-restored-b --point-in-time="$PITR_AFTER" --async
+until gcloud sql instances describe lab06b-restored-b --format='value(state)' 2>/dev/null | grep -q RUNNABLE
+do sleep 30; done
+```
+
+验证应报 `relation "orders" does not exist`——DROP 本身也写 WAL，前滚会把它一并重放。
+**A 证明「回到事故前一秒数据全在」，B 证明「回到事故之后 DDL 也回来了」**：PITR 不是回到最新。
+
+### 第 7 步 · 收尾
+
+```bash
+gcloud sql instances delete lab06b-restored-a --quiet
+gcloud sql instances delete lab06b-restored-b --quiet
+gcloud sql instances delete lab06b-pg --quiet
+gcloud sql instances list                       # 确认 0 台
+
+# retain-backups 开着 → 备份还在计费，不想留就清（实例删后能否列/删需现场确认）
+gcloud sql backups list --instance=lab06b-pg
+gcloud sql backups delete <ID> --instance=lab06b-pg --quiet
+```
+
+### RTO 实测分项（跑完填进「实战记录」）
+
+| 项 | 开始 | 结束 | 耗时 | 说明 |
+| --- | --- | --- | --- | --- |
+| 发现 + 审计定锚 | T_fault | T_audit | | 真实生产 ≈ 监控告警延迟 + 人反应 |
+| 恢复本体 | T_restoreA_start | T_restoreA_ready | | clone 全量 + 前滚，几十分钟量级 |
+| 验证 | ready | 验证通过 | | |
+| **合计 RTO** | T_fault | 验证通过 | | |
+
+### 写进结论的三句话
+
+1. **恢复点不是猜出来的，是取证做出来的**：pgAudit 的 DDL 时间戳 = 事故时刻，恢复点取它减 5 秒。
+2. **审计必须事故前就配好**——事后加 flag 只能记录事后，救不了已经发生的删表。
+3. **RPO 由取证精度决定，不由备份频率决定**；压 RTO 靠预演过的 runbook + 快速定锚，
+   clone 本身是大头，且同一实例只能串行。
+
+> 依据：Claude 补测 runbook + 2026-11-07 本仓库实测（409 串行、白名单不继承、
+> gcloud 前台假失败、WAL 归档滞后）。本会话连不上 GCP 官方页，
+> `pgaudit` flag、Logging 字段、`--retain-backups-on-delete` 行为**首跑需现场核验**。
+
 ## 文件
 
 - `sql/01_seed.sql` — 建库、建表、种子数据
 - `sql/02_break.sql` — 误删（破坏）
-- `sql/03_verify.sql` — 在恢复实例上核对数据
+- `sql/03_verify.sql` — 在恢复实例上核对数据；8 行 / 10 行 / 表不存在三种判读通用
