@@ -225,7 +225,8 @@ SELECT count(*) FROM orders;   -- 应为 8；T1 之后写的那 2 条不该在
 | 恢复实例创建耗时         | T_restore_ready − T_restore_start    |     |
 | 实际可恢复粒度          | 秒级 / 分钟级（看 get-latest-recovery-time） |     |
 
-**结论要回答的问题**：如果这是真生产，丢了什么、停了多久、下一步怎么把 RTO 压下来（预案脚本、连接串自动切换、只读副本等）。
+**结论要回答的问题**：如果这是真生产，丢了什么、停了多久、下一步怎么把 RTO 压下来（取证定锚、
+预演 runbook、冻结写入、单表数据手术、连接串自动切换等；**只读副本防不了逻辑误删**）。
 
 ### 破坏 2（可选加餐）：HA failover
 
@@ -291,16 +292,31 @@ clone 前体检（全部通过）：
 
 | 指标 | 怎么算 | 实测值 |
 |------|--------|--------|
-| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数 / 时间窗口 | **2 行 / 7 分 15 秒**（herb-005、tea-005，`15:53:18→16:00:33`）。**这是「选择恢复到 T1」的结果，不是 PITR 的物理下限** |
+| **RPO**（最多丢多少数据） | T1 → T_break 之间写入的行数 / 时间窗口 | **2 行 / 7 分 15 秒**（herb-005、tea-005，`15:53:18→16:00:33`）。**这是「选择恢复到 T1」的结果，主实例存活时不是 PITR 的物理下限** |
 | **RTO**（多久恢复服务） | T_restore_ready − T_break | **约 47 分钟**（`16:00:33→16:47:53`） |
 | 恢复实例创建耗时 | T_restore_ready − T_restore_start | 约 40 分钟（`db-f1-micro`，其中含 op 排队 + 白名单 patch） |
 | 实际可恢复粒度 | get-latest-recovery-time | 秒级窗口可指定；但落点受最近一次备份（15:27）+ WAL 覆盖限制 |
 
-**结论**：PITR 能把误删救回来，但「建新实例等 40 分钟」决定了 RTO 下限——真生产压 RTO 靠的是别用最低配实例、预先备好白名单与连接串切换脚本、并行 fan-out 多个候选恢复点；RPO 则由**你能确认事故时刻的精度**决定，而不是备份频率：事故点越清楚，恢复点就能贴得越近，丢得越少。
+**结论**：PITR 能把误删救回来，但「建新实例等 40 分钟」决定了 RTO 下限。真生产压 RTO 的三板斧是
+**好取证少猜、预演过的 runbook、事故第一时间冻结写入**；再配合「clone 出来只回灌出事那张表」的
+数据手术，能把整库切换的 1 小时压成单表回灌的几分钟（见 FAQ 3）。RPO 则由**你能确认事故时刻的精度**
+决定，而不是备份频率：事故点越清楚，恢复点就能贴得越近，丢得越少。
 
-> 2026-11-08 更正：原结论写的「配只读副本 / 预建 standby 压 RTO」对**逻辑误删无效**。
+**RPO 要分两种故障看**（2026-11-08 复核补充）：
+
+- **主实例还活着（逻辑误删）**：WAL 在本地、会陆续归档，等窗口追上后能恢复到事故前一瞬，
+  **数据可以接近零丢失**——本轮「丢 2 行」纯粹是选了保守点 T1。
+- **主实例主机挂了**：最多丢「归档滞后」那一段窗口（本轮实测 2 分 20 秒），HA 靠同步复制堵这个口子。
+- **第三块最容易漏**：事故后到切流之间写进**原库**的新数据，clone 里不会有。
+  所以真实事故第一动作是**冻结写入**。
+
+> 2026-11-08 更正（一）：原结论写的「配只读副本 / 预建 standby 压 RTO」对**逻辑误删无效**。
 > `DROP TABLE` 会秒级同步到只读副本和 HA 备机，副本上表同样没了。HA 防的是机器 / 机房故障，
 > 防人为误删的最后一道防线仍是 PITR clone。
+>
+> 2026-11-08 更正（二，Claude 复核）：随后写的「并行 fan-out 多个候选恢复点」**在 Cloud SQL 不成立**——
+> 同一实例任意时刻只容一个管理操作，第二个 clone 提交时直接 409 `operationInProgress`、**不排队**。
+> 只能串行逼近，详见 FAQ 2。
 
 ### FAQ：能不能恢复到 T_break，把最后 2 条也找回来？
 
@@ -312,6 +328,9 @@ WAL 前滚到 `16:00:33.415Z`，最后 2 条（herb-005 / tea-005）会被重放
 gcloud sql instances clone lab06-pg lab06-pg-full --point-in-time='2026-11-07T16:00:33.415Z'
 ```
 
+> 精度提醒（复核补充）：别指望毫秒级卡点，恢复点往前留 **2–3 秒余量**（如 `16:00:30Z`）更稳。
+> 本轮 T_break 与 DROP 之间本来就没有写入，所以取 T_break 本身也安全。
+
 三条必须记住的边界：
 
 1. **恢复点要卡在 DROP 之前，不是越新越好。** `DROP TABLE` 在 PostgreSQL 里也是写 WAL 的事务，
@@ -320,9 +339,8 @@ gcloud sql instances clone lab06-pg lab06-pg-full --point-in-time='2026-11-07T16
 2. **`latestRecoveryTime` 有滞后。** 16:00:33 查到的窗口只到 `15:58:12`（WAL 归档滞后约 2 分 20 秒），
    当时立刻 clone 会被拒；要等窗口推进过 T_break（约 16:02 之后）再发起。WAL 默认保留 7 天，
    等一等不会丢数据。
-3. **生产里最难的不是技术，是不知道事故几点发生。** 所以真实故障通常退回到一个「确认安全」的
-   时间点，宁可多丢一点；本轮故意选 T1 就是在演示这个保守决策。**若事故时刻精确已知，
-   RPO 可以趋近于 0**——本表的「2 行」不是 PITR 的能力上限。
+3. **主实例存活时，事故点越清楚，RPO 越接近 0。** 本轮故意选 T1 是在演示「不知道事故几点」
+   时的保守决策；本表的「2 行」不是 PITR 的能力上限（主机故障另有归档滞后地板，见上方 RPO 分两种故障）。
 
 > 2026-11-08 追记：本轮两台实例当晚已删除，备份与 WAL 日志随实例一并清除
 > （创建时未加 `--retain-backups-on-delete`），因此**无法再补一次 clone 到 T_break 做对照实验**。
@@ -331,18 +349,20 @@ gcloud sql instances clone lab06-pg lab06-pg-full --point-in-time='2026-11-07T16
 
 ### FAQ 2：为什么 latestRecoveryTime 有滞后？猜错时间点怎么办？
 
-**滞后不是 bug，是 PITR 的工作方式。** `latestRecoveryTime` 报的不是「现在几点」，而是「能恢复到哪一点」的上限。
-PITR 不靠主实例本机磁盘，靠的是持续把 WAL 日志搬到 Cloud Storage：事务提交后先落在主实例本地 WAL，
-只有当一个 WAL 段被**封口 → 上传 → 登记**完成，里面的事务才算「可恢复」。所以时间戳等于最后一个已归档
-WAL 记录，天然落后几分钟。
+**滞后不是 bug，是 PITR 的工作方式。** 官方定义 `latestRecoveryTime` 就是「最晚可恢复到的时间点」。
+按机制推断（Cloud SQL 托管侧的归档节奏未公开，以下是按 PostgreSQL 通用机制的解释，**不是官方事实**）：
+PITR 靠持续把 WAL 日志搬到 Cloud Storage，事务提交后先落在主实例本地 WAL，只有当一个 WAL 段被
+**封口 → 上传 → 登记**完成，里面的事务才算「可恢复」，所以时间戳天然落后于当前时间。
 
-- **低流量实例滞后更明显**：段默认按 16MB 或超时强制切段。本轮 `db-f1-micro` 一晚才几条 INSERT，
-  段根本填不满，只能等超时，实测滞后 **2 分 20 秒**（16:00:33 查到的窗口只到 15:58:12）。
+- **写入越少，滞后越大**（复核补充）：低流量实例 WAL 段填得慢，更依赖超时切段；持续写入时切段快、
+  滞后更小。本轮 `db-f1-micro` 一晚才几条 INSERT，实测滞后 **2 分 20 秒**（16:00:33 查到的窗口只到 15:58:12）。
+  → 「16MB / 超时切段」只是原生 PostgreSQL 的机制类比，**别当成托管服务的确定实现**；
+  2 分 20 秒也只是本轮实测值，官方没给典型滞后量级，别写成常数。
 - 上传 + 服务端刷新恢复窗口元数据还有一层延迟，API 返回值可能不是刚刚那一刻。
-- **这段滞后就是 PITR 真实的 RPO 地板**：等对时间点没事（WAL 保留期内随时补），但主实例主机若在这
+- **这段滞后是「主机故障」场景的 RPO 地板**：等对时间点没事（WAL 保留期内随时补），但主实例主机若在这
   两分钟里彻底挂掉、WAL 还没搬走，这些事务就真丢了。HA 实例靠同步复制到备机堵这个口子。
-- 另一个方向：`earliestRecoveryTime` 由最老的保留备份决定，备份过期就往后推；WAL 保留期
-  （PostgreSQL 默认 7 天，可配）决定能回溯多久。事故别拖，越拖能选的点越少。
+- 另一个方向：`earliestRecoveryTime` 与最老备份 + 日志保留有关，备份过期就往后推；PostgreSQL 的
+  `transactionLogRetentionDays` 默认 7 天、可配 1–7 天（以官方页为准）。事故别拖，越拖能选的点越少。
 
 **猜错时间点可以换，不用手动重做 baseline。** 两条关键事实：
 
@@ -350,24 +370,80 @@ WAL 记录，天然落后几分钟。
 2. 「基线备份 + WAL 前滚」是服务端每次 clone 自动做的，备份只读、可反复用。既不需要、也没法手动
    「先 restore baseline 再 roll forward 第二遍」。多付的只是**又一次完整 clone 的时间**，不是两道工序。
 
-真正的风险是**串行猜点**：一次 40 分钟，猜三次就 120 分钟。解法是**并行 fan-out**——同一时刻发起
-3–4 个不同候选点（如事故前 30 分 / 10 分 / 1 分），等它们一起 ready，逐个 `count(*)` 检查，
-留最好的、删其余。时间 ≈ 一次 clone，代价是几台实例同时计费；生产里这笔钱远比停机便宜。
+**⚠️ 但必须串行（2026-11-08 Claude 复核纠正，原文已作废）。** Cloud SQL **同一实例任意时刻只容
+一个管理操作**，第二个 `clone` 提交时直接 409 `operationInProgress`、**不排队**。本轮实战也撞过同类
+409（clone op 未收尾时给恢复实例 patch 被拒）。所以之前写的「同时发 3–4 个候选点、RTO ≈ 一次 clone」
+**不成立**。
+
+正确姿势是「**先取证定锚 → 一次 clone**」，而不是「先 clone 几次试试」（见 FAQ 3）。确实需要试探时，
+用**串行二分**收敛：一次只发一个 clone，等它 `DONE` 后连进去检查结果，再决定下一个候选点；
+有审计日志时通常 1–2 轮就够。
 
 ```bash
-for T in 15:30:00 15:50:00 15:59:00; do
-  gcloud sql instances clone lab06-pg "lab06-cand-${T//:/}" \
-    --point-in-time="2026-11-07T${T}.000Z" --async
-done
-gcloud sql operations list --instance=lab06-pg    # 等全部 DONE
+# 串行：一次一个，等完成后再决定下一个时间点
+gcloud sql instances clone lab06-pg lab06-cand-1 \
+  --point-in-time='2026-11-07T15:59:00.000Z' --quiet
+gcloud sql operations describe <op-id> --project lukechengtest   # 轮询到 DONE，别用 beta operations wait
+# 连进去 count(*) 检查；太早或太晚就删掉这个 clone，换时间点再发一个
 ```
 
-操作上的坑（本轮踩过的）：每个 clone 要用**不同实例名**；**授权网络不继承**，连之前要各自 patch；
-**源实例绝不能删**（删了备份和 WAL 一起没，就没法再 clone）；WAL 保留期有限，别拖过几天；
-clone 出来后还要把数据导回主实例或切连接串，那段时间同样计入 RTO。
+操作上的坑（本轮踩过 + 复核补充）：每个 clone 要用**不同实例名**，注意项目实例配额；**授权网络不继承**，
+连之前要各自 patch；**源实例绝不能删**（默认删实例即删备份，只有 `--retain-backups-on-delete` /
+`--final-backup` 才保留）；日志保留期有限；clone 出来后还要把数据导回主实例或切连接串，
+那段时间同样计入 RTO。
 
-**更好的办法是别猜**：开 `pgAudit` / 审计日志记录 DDL，配合应用日志、告警错误尖峰，
-直接定出「事故前一秒」。真生产里「没有时间戳」本身就是该补的短板，而不是靠反复 clone 去试。
+**别用 in-place restore**（复核补充）：官方提到它会**重置恢复窗口且不可撤销**，没把握时别碰；
+`clone` 才是可反复试的安全路径。
+
+### FAQ 3：真实事故里，恢复点到底怎么定？
+
+**核心认知：恢复点不是「猜」出来的，是「取证」做出来的。** 顺序是「先取证 → 定锚 → 一次 clone」，
+而不是「先 clone 几次试试」。证据源按实用性排序：
+
+**① 数据库审计日志 —— 标准答案，不用改业务代码**
+
+Cloud SQL PostgreSQL 支持 pgAudit：开 `cloudsql.enable_pgaudit=on` 标志，库里
+`CREATE EXTENSION pgaudit;` 并设 `pgaudit.log='ddl,role'`，DDL 就带时间戳进 Cloud Logging。
+事故时搜一条 `DROP TABLE`，恢复点精确到秒。只记 `ddl,role` 的日志量很小，成本可忽略。
+
+**② 心跳表 —— 零依赖兜底，最俗最管用**
+
+每 30–60 秒往一张小表插一行 `(now())`。clone 出来后看心跳表最后一行，立刻知道 clone 落在哪一刻、
+离事故差多少。**必须放在和业务表分开的小表里**——业务表被 DROP 时心跳还在，clone 才能自证时间戳。
+
+**③ 外部线索**
+
+应用日志 / 发布记录（谁几点点了删除）、监控错误尖峰（事故开始时刻）、数据自带的
+`created_at` / `updated_at`（恢复后圈定受影响行窗口）。
+
+> 关于「给每个事务都加时间点」：`created_at` / `updated_at` 是标配，但**救不了 DDL 删表**——
+> 时间戳跟着表一起被删了。真正扛事的证据必须是「表外」的：审计日志、心跳表、Cloud Logging。
+> 侵入式地给每个业务事务打全局恢复标记，投入产出比很差，不建议。
+
+**定锚之后：恢复点 = 坏事提交前一瞬，宁早勿晚。** 主实例还活着时 WAL 会陆续归档，等窗口追上就能
+贴近事故点；不放心就往前留 2–3 秒。
+
+**执行策略：数据手术（比反复 clone 划算）。** DROP 表这类事故，clone 到事故前 → 只把那张表
+`pg_dump` 出来导回原库，其他表和线上流量全程不动，整体 RTO 从「整库切换 1 小时」压到
+「单表回灌几分钟」。坏 UPDATE 同理：恢复前 / 后两个 clone 对比，只把错改的行合回去。
+
+**RTO 的真实构成**：发现（监控告警）+ 决策 + clone（最大头）+ 验证 + 切流。
+所以压 RTO 三板斧：**好取证少猜、预演过的 runbook、事故第一时间冻结写入**。
+「冻结写入」最容易漏——事故后到切流之间写进**原库**的新数据，clone 里不会有，这部分也会丢。
+
+**复制救不了逻辑误删**（复核补充）：Cloud SQL 是 WAL / 页级物理复制，DROP 秒级同步到只读副本和
+HA 备机；平台**没有**延迟复制副本（那是 AWS RDS 的能力）。防手滑只能靠 PITR + 权限管控 + 审计。
+
+<details>
+<summary>复核来源（2026-11-08 Claude 提供，本会话网络未能直连核验）</summary>
+
+- [执行时间点恢复 (PITR) — Cloud SQL for PostgreSQL 官方文档](https://docs.cloud.google.cn/sql/docs/postgres/backup-recovery/pitr)
+- [Manage backups for deleted instances — Cloud SQL 官方文档](https://docs.cloud.google.com/sql/docs/sqlserver/backup-recovery/manage-backups-deleted-instance)
+- [Cloud SQL backups and PITR — Exodus](https://exodus.elim.io/blog/backups-and-point-in-time-recovery-on-cloud-sql)
+- [GCP 409 operationInProgress 案例 — DevOps AI Toolkit](https://devopsaitoolkit.com/blog/gcp-error-cloudsql-operation-already-in-progress/)
+- [gcloud sql instances create — SDK 参考](https://clouddocs-dot-devsite-v2-prod.appspot.com/sdk/gcloud/reference/sql/instances/create)
+
+</details>
 
 ## 文件
 
