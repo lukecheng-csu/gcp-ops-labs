@@ -335,6 +335,32 @@ SSH 'sudo rm -f /tmp/lab07-fill; df -h / | tail -1'               # 等 2~4 分�
 > 严格照练习走就用上面的 `dd`，想快速再验一轮用 `fallocate`。**两者别同时开** —— 上一轮就是删完文件又开了第二轮 dd，结果事件一直 OPEN、恢复信不来。
 > 收尾顺序永远是：**先确认没有 dd/fallocate 在跑，再删文件**。
 
+#### 指标断供：盘满了却不报警（2026-11-09 实测）
+
+`dd` 以 ~10MB/s 连灌 30 分钟、盘到 87%（只剩 2.5G）后，**Ops Agent 的采集进程被拖死**：
+磁盘 / CPU / 内存三类指标同时停在灌盘开始那一刻（14:52:44Z），之后再无一个点，
+告警引擎看不到数据，阈值再低也不会触发。日志长这样：
+
+```bash
+SSH 'sudo journalctl -u google-cloud-ops-agent-opentelemetry-collector --since "20 min ago" --no-pager | tail -20'
+# Exporting failed. Dropping data. ... DeadlineExceeded
+# grpc: ... monitoring.googleapis.com:443 ... authentication handshake failed
+# Failed to scrape Prometheus endpoint http://0.0.0.0:20201/metrics: context deadline exceeded
+```
+
+> 注意：连**本地** `0.0.0.0:20201` 都超时，说明是采集进程卡死，不是网络断
+> （VM 上 `curl https://monitoring.googleapis.com/` 3 秒就回 404，出网是通的）。
+
+修复（不用重装、不用改配置）：
+
+```bash
+SSH 'sudo systemctl restart google-cloud-ops-agent; sudo systemctl restart google-cloud-ops-agent-opentelemetry-collector'
+# 等 1~2 分钟，指标回来（实测 df 87% → Agent 82.8%），告警立刻 OPEN
+```
+
+> 这也是为什么推荐 `fallocate` 而不是 `dd`：**秒级**造完文件就停，不给 I/O 长时间施压，Agent 不会垮。
+> 真出事了，这条排查路子本身就是运维里典型的「**监控盲区**」案例，值得写进作品集。
+
 ### 4.2 Uptime 告警
 
 ```bash
@@ -692,7 +718,7 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 > `custom.googleapis.com/host/*` 的**指标定义**不用删（API 不支持手删）；没有数据写入就不计费，  
 > 下次手敲时新点会继续写进同名指标。删完再敲一遍，从速查章「开工三件事」开始即可。
 
-## 最容易翻车的 14 条
+## 最容易翻车的 15 条
 
 | #  | 坑                                           | 正确做法                                                                                        |
 | -- | ------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -710,6 +736,7 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 | 12 | 清场后从 B3 直接开敲                                | 上一轮把 `hybrid-ops-agent` 服务账号也删了，**必须先跑 B1 重建 SA 并发 key**，否则凭证缺失、指标写不进                       |
 | 13 | 新窗口直接敲 `SSH ...` 报 `hostname contains invalid characters` | `SSH()` / `HOST_IP` 是上个窗口临时定义的，新窗口要重敲「开工三件事」；应急可直接写全 `ssh -i ~/.ssh/google_compute_engine ... lukecheng@<IP>` |
 | 14 | 告警还 `OPEN` 时「再破坏一次」想重收邮件             | **持续 OPEN 不会重复发信**，通知只在状态变化（OPEN / CLOSED）时发。先删填充文件让事件关闭（收恢复信），再破坏才有新的触发信；想立刻测通道就走 4.2 的 uptime（另一条策略、全新事件） |
+| 15 | `dd` 慢灌到 87% 却「死活不报警」                  | **监控自己先被拖垮了**：磁盘/CPU/内存指标同时断供，告警引擎没数据自然不触发。见下方「指标断供」排查；**别用 dd 慢灌，直接 `fallocate -l 7.5G` 秒级** |
 
 ## 作品集交付物（跑完补进来）
 
