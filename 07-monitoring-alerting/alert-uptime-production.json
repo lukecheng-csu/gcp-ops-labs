@@ -21,7 +21,7 @@
       }
     }
   ],
-  "alertStrategy": { "autoClose": "600s" },
+  "alertStrategy": { "autoClose": "1800s" },
   "documentation": {
     "mimeType": "text/markdown",
     "content": "## 主力 n8n 拨测失败（生产，别做破坏演练）\n\n目标：`https://cloudworkflowdone.com/healthz`，期望 200 且内容含 `ok`。\n主机：腾讯云轻量 `lhins-js6lgbt` / `43.165.125.114` / Rocky Linux 9.4，跑 `n8n-core` / `n8n-postgres` / `n8n-caddy`，兼任 GCP 操作跳板机（squid 127.0.0.1:3128 + Hysteria2）。\n\n**这是生产机，禁止 dd 灌盘、停容器、改 Caddy/squid 配置。** 排查只允许只读：`ssh jump-us 'docker ps; df -h /; curl -fsS http://127.0.0.1:5678/healthz'`。\n\n常见原因：容器挂了 / Caddy 证书异常 / Cloudflare 到源站链路断 / 轻量服务器到期（**2026-11-21**）/ 磁盘写满。\n\n拨测走 Cloudflare 边缘，但 `/healthz` 响应头是 `cf-cache-status: DYNAMIC`，不缓存，源站挂了会真实失败。\n\n台账见仓库根目录 `MANAGED_HOSTS.md`。"

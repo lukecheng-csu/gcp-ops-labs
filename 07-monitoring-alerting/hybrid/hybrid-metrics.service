@@ -1,0 +1,17 @@
+[Unit]
+Description=Hybrid host metrics -> Cloud Monitoring (generic_node)
+Documentation=file:///opt/hybrid-metrics/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment="GOOGLE_APPLICATION_CREDENTIALS=/etc/google/auth/application_default_credentials.json"
+Environment="HYBRID_PROJECT_ID=lukechengtest"
+Environment="HYBRID_NODE_ID=jump-us"
+Environment="HYBRID_LOCATION=global"
+Environment="HYBRID_NAMESPACE=tencentcloud-na-ashburn"
+ExecStart=/opt/hybrid-metrics/venv/bin/python /opt/hybrid-metrics/collect.py
+StandardOutput=journal
+StandardError=journal

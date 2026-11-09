@@ -1,0 +1,18 @@
+# /etc/google-cloud-ops-agent/config.yaml — 非 GCE 主机专用覆盖配置
+#
+# 在这台腾讯云轻量服务器上，Ops Agent 检测不到 GCE metadata，会把内置
+# agent.googleapis.com/* 指标挂到 generic_node，Cloud Monitoring 以
+# "unknown metric type" 拒绝（实测 200 点里 195 点失败，日志刷屏）。
+#
+# 关掉内置 host metrics，日志仍由默认 logging pipeline 送 Cloud Logging；
+# 系统指标改由 hybrid-metrics 以 custom.googleapis.com/host/* 写 generic_node。
+#
+# 依据：官方文档 "Configure the Ops Agent" →
+# "To turn off the built-in ingestion of host metrics, redefine the default
+#  pipeline with an empty receivers list and no processors."
+
+metrics:
+  service:
+    pipelines:
+      default_pipeline:
+        receivers: []

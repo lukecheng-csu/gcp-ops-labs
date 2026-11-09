@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect hybrid host metrics every 60 seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=hybrid-metrics.service
+
+[Install]
+WantedBy=timers.target

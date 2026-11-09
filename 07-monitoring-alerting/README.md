@@ -250,28 +250,51 @@ gcloud storage cp /tmp/lab07-health.txt gs://lukecheng-static-site/health.txt \
 Rocky Linux 9.4 / 域名 `cloudworkflowdone.com`，跑 `n8n-core` / `n8n-postgres` / `n8n-caddy`，
 兼任跳板机（squid `127.0.0.1:3128` + Hysteria2）。**2026-11-21 到期**。完整卡片见 `MANAGED_HOSTS.md`。
 
-### 为什么不能照抄本练习的做法
+### 混合云架构：三条链路汇到同一个项目（2026-11-09 已实装）
 
-| | `practice-web`（GCE） | `jump-us`（腾讯云） |
+| 数据 | 采集方 | 落点 |
 | --- | --- | --- |
-| 服务账号凭证 | VM 自带，自动鉴权 | **没有**，GCE metadata 不可用 |
-| 装 Ops Agent | 一条命令，指标直接进 | 要生成 GCP 服务账号**私钥 JSON 存到腾讯云生产机**，配 ADC + systemd 环境变量 |
-| 资源类型 | `gce_instance` | 非 GCE，指标形态另配 |
-| CPU / 内存 / 磁盘 | ✅ | ❌（不装 Agent 就没有） |
-| 外部拨测 | ✅ | ✅ **跨云通用，零侵入** |
+| syslog | Ops Agent 2.73.0（Fluent Bit） | Cloud Logging，`generic_node` |
+| CPU / 内存 / 根盘 / 负载 / 容器数 | `hybrid-metrics` 每 60s | `custom.googleapis.com/host/*` on `generic_node` |
+| 站点可用性 | 外部 uptime check | `monitoring.googleapis.com/uptime_check/check_passed` |
 
-结论：**只做外部拨测**，机器上不改一个字节。把 GCP 私钥放到一台 12 天后到期的生产主力机上，
-换来的只是几个系统指标，这笔账不划算；真要深度纳管，等续费/迁移定了再单独评估。
+**不能照抄本练习的原因**：`practice-web` 是 GCE，VM 自带服务账号，`agent.googleapis.com/*` 指标直接挂
+`gce_instance`。这台腾讯云机器没有 GCE metadata，Ops Agent 会退化到 `generic_node`，
+而内置指标**绑定 `gce_instance`**，Cloud Monitoring 以 `unknown metric type` 拒收。
+
+实测（2026-11-09）：Agent 装上、凭证有效、日志正常入库，但 200 个指标点里 195 个被拒，
+CPU / 内存 / 磁盘 **0 条入库**。解法是按官方文档关掉内置 host metrics、保留日志 pipeline，
+系统指标改由自建脚本写成**自定义指标**（自定义指标允许挂 `generic_node`）。
+`generic_node` 标签：`node_id=jump-us` / `namespace=tencentcloud-na-ashburn` / `location=global`。
+
+> `location` 只能填 GCP 区域名或 `global`，填腾讯云的 `na-ashburn` 会被
+> `Unrecognized region or location` 拒收（第一次实测踩到）。云厂商/区域放 `namespace`。
+
+**凭证**：专用服务账号 `hybrid-ops-agent`，只有 `monitoring.metricWriter` + `logging.logWriter`；
+key 存 `/etc/google/auth/application_default_credentials.json`（`0400 root:root`），
+经 `/etc/systemd/system.conf` 的 `DefaultEnvironment` 注入。**仓库不含任何密钥**。
+实现、排错、卸载步骤见 [`hybrid/README.md`](hybrid/README.md)。
 
 拨测目标选 `https://cloudworkflowdone.com/healthz`：`200` + `{"status":"ok"}`。
 它虽然走在 Cloudflare 后面，但响应头是 `cf-cache-status: DYNAMIC`（**不缓存**），
 源站挂了会真实失败，不会出现「源站死了 CF 还返缓存 200」的假绿。已实测：绕开 CF 直连
 `43.165.125.114` 的 `/healthz` 同样返回 200。
 
-### 前提：一条独立的常驻邮件通道
+### 云上当前状态（2026-11-09 已创建）
 
-**不要复用练习 7 的 `lab07-email`**——收尾脚本会把它 DELETE 掉，生产告警就跟着哑了。
-本扩展自成一体，不依赖练习进度，任何时候都能单独跑：
+| 资源 | 名称 | 状态 |
+| --- | --- | --- |
+| 拨测 | `prod-n8n-health` | 已建，每 1 分钟拨 `/healthz` |
+| 告警 | `prod-n8n-health-failed` | 已建，**未绑邮件通道** |
+| 告警 | `prod-n8n-host-degraded` | 已建，5 个条件（含「采集断档」），**未绑邮件通道** |
+| Dashboard | `prod-n8n-overview` | 已建，四面板（系统指标 / 容器数+拨测 / 纳管说明 / 负载） |
+| 邮件通道 | `prod-email` | **待建** —— 收件地址还没定，不擅自替你发信 |
+
+告警目前只在控制台和 incident 列表里可见，**不会发邮件**。做完下面这步才会发。
+
+### 唯一剩的一步：接上常驻邮件通道
+
+**不要复用练习 7 的 `lab07-email`** —— 收尾脚本会 DELETE 掉它，生产告警就跟着哑了。
 
 ```bash
 export EMAIL='收告警的邮箱'          # 先定这个，别照抄模板
@@ -285,12 +308,21 @@ curl -sS -X POST \
 export PROD_CHANNEL_ID=$(python3 -c "import json,sys;print(json.load(sys.stdin)['name'].split('/')[-1])" \
   < /tmp/prod-channel-out.json)
 echo "PROD_CHANNEL_ID=$PROD_CHANNEL_ID"
+
+# 把两条策略绑上通道：删掉重建最省事，配置文件里不用写死 ID
+for p in $(G monitoring policies list --format='value(name,displayName)' | awk '$2 ~ /^prod-/ {print $1}'); do
+  G monitoring policies delete "$p" --quiet
+done
+G monitoring policies create --policy-from-file=alert-uptime-production.json \
+  --notification-channels="$PROD_CHANNEL_ID"
+G monitoring policies create --policy-from-file=alert-host-production.json \
+  --notification-channels="$PROD_CHANNEL_ID"
 ```
 
-> 用 REST 而不是 `gcloud beta monitoring channels`，理由同第 0.2 步（本机没装 beta 组件）。
-> 这条 `prod-email` 是常驻资源，**练习收尾不删**。
+> 用 REST 建通道而不是 `gcloud beta monitoring channels`，理由同第 0.2 步（本机没装 beta 组件）。
+> `prod-email` 是常驻资源，练习收尾只删 `lab07-email`。
 
-### 三条命令（约 3 分钟）
+### 复现 / 重建命令（已建好，迁移时用）
 
 ```bash
 # 1. 拨测：每 1 分钟，HTTPS 200 且内容含 ok
@@ -302,37 +334,43 @@ G monitoring uptime create prod-n8n-health \
   --matcher-content=ok --matcher-type=contains-string \
   --period=1 --timeout=10
 
-# 2. 独立告警策略（filter 锁定 host，不会和 lab07 的 GCS 拨测串）
-G monitoring policies create --policy-from-file=alert-uptime-production.json \
-  --notification-channels="$PROD_CHANNEL_ID"
+# 2. 两条告警（不带 --notification-channels 也能建，只是不发邮件）
+G monitoring policies create --policy-from-file=alert-uptime-production.json
+G monitoring policies create --policy-from-file=alert-host-production.json
 
-# 3. 独立常驻 dashboard（不混进练习那张，曲线不会被演练污染）
+# 3. 常驻 dashboard（不混进练习那张，曲线不会被演练污染）
 G monitoring dashboards create --config-from-file=dashboard-production.json
 ```
 
 验证（只读，别去停容器试）：
 
 ```bash
-G monitoring uptime list-configs --format='table(displayName,name)'   # 看完整目标加 --format=yaml
+G monitoring uptime list-configs --format='table(displayName,name)'
 G monitoring policies list --format='table(displayName,enabled)'
+G monitoring dashboards list --format='table(displayName,name)'
 curl -sS --noproxy '*' -m 10 https://cloudworkflowdone.com/healthz   # {"status":"ok"}
-# 常驻邮件通道（确认 prod-email 在、lab07-email 是练习那条）
-curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-  "https://monitoring.googleapis.com/v3/projects/$PROJECT/notificationChannels" \
-  | python3 -c "import json,sys;[print(c['displayName'], c['labels'].get('email_address')) for c in json.load(sys.stdin).get('notificationChannels',[])]"
+ssh jump-us 'systemctl is-active hybrid-metrics.timer; journalctl -u hybrid-metrics.service -n 3 --no-pager | tail -3'
 ```
 
-> `alert-uptime-production.json` 里用 `resource.labels.host = "cloudworkflowdone.com"` 把范围钉死，
+> `alert-uptime-production.json` 用 `resource.labels.host = "cloudworkflowdone.com"` 把范围钉死，
 > 所以练习 7 破坏 `health.txt` 时**不会误报生产机**，反过来也一样。
 > 想看真触发，只做只读观测：等自然故障，或在控制台里临时停掉这条拨测再恢复（不要动 n8n）。
+
+### 主机告警的五个条件
+
+根盘 >85% / CPU >90% / 内存 >90% / n8n 容器数 <3 / **采集断档 >5 分钟**。
+最后一条最要紧：采集自己挂了之后，前四条阈值告警全都不会响，别误以为一切正常。
+`n8n_containers_up = -1` 表示 `docker ps` 查询失败，也会触发「容器数 < 3」。
 
 ### 红线
 
 - **生产机不参与破坏演练**：禁止 `dd` 灌盘、停容器、停 Agent、改 Caddy/squid 配置。
   那台还兼着 GCP 操作的代理通道，弄断了后面所有练习都连不上。
 - 只允许只读巡检：`ssh jump-us 'docker ps; df -h /; curl -fsS http://127.0.0.1:5678/healthz'`。
-- 命名统一 `prod-` 前缀；下面清理脚本已加 `lab07-` 过滤，**不会误删**这几条常驻配置。
-- 到期前（**2026-11-21**）决定续费还是迁移；机器没了，这条拨测也就没意义了。
+- 命名统一 `prod-` 前缀；下面清理脚本已按 `lab07-` 前缀过滤，**不会误删**这几条常驻配置。
+- **凭证管理**：服务账号 key 只在生产机上（`0400 root:root`），仓库、文档、截图里都不许出现；
+  按 `hybrid/README.md` 卸载时要顺手删 GCP 侧那把 key 和 systemd 的 `DefaultEnvironment` 行。
+- 到期前（**2026-11-21**）决定续费还是迁移；机器没了，拨测和指标采集都得在新机器上重做一遍。
 
 ---
 
@@ -341,6 +379,8 @@ curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 - 不新建 VM（免费额度 1 台 e2-micro 已给 `practice-web`）、不建 LB、不建 Cloud SQL。
 - GCP 自带指标、`uptime_url` 拨测、告警策略、邮件通道**都在免费额度内**；Ops Agent 写入的指标量很小。
 - 扩展章那条 `prod-n8n-health` 是第二条拨测，同样在免费额度内；它常驻，不随练习清理。
+- **注意**：生产机的 5 个 `custom.googleapis.com/host/*` 是**自定义指标，按样本量计费**（约 21.6 万点/月），
+  金额很小但不是零；在 Metrics Management 页可看实际用量。这一条属于常驻生产监控，不算练习成本。
 - 唯一可能产生费用的是 GCS 对象存储和请求，`health.txt` 就几字节，可忽略。
 - **练完把 `lab07-*` 监控配置全删**（下面）；`prod-*` 常驻配置和 `prod-email` 通道保留，VM 和 GCS 桶保留给练习 1/3。
 
@@ -380,7 +420,7 @@ G monitoring dashboards list --format='table(displayName)'
 > `SSH 'sudo bash add-google-cloud-ops-agent-repo.sh --uninstall'`。
 > **不要删 `practice-web`**，它是练习 1 的资产；也不要动 `index.html` 和 bucket 权限。
 
-## 最容易翻车的 9 条
+## 最容易翻车的 11 条
 
 | # | 坑 | 正确做法 |
 | --- | --- | --- |
@@ -393,6 +433,8 @@ G monitoring dashboards list --format='table(displayName)'
 | 7 | 灌盘灌到 100% | 从 40% 起灌 9G 到 ~85% 就够，留 3G 给系统写日志 |
 | 8 | 告警配好立刻看邮件 | 采样 60s + duration 60s + 邮件投递，**2~4 分钟**才到，别急着重配 |
 | 9 | 清理脚本一把删掉所有拨测/策略 | 加了 `prod-*` 常驻监控后必须按 `lab07-` 前缀过滤；删了生产告警等于裸奔 |
+| 10 | 告警策略里 `autoClose` 写 `600s` | **最少 30 分钟**，API 直接报 `INVALID_ARGUMENT`；已把两份 uptime 策略改成 `1800s` |
+| 11 | 非 GCE 机器装完 Ops Agent 以为有指标了 | 内置 `agent.googleapis.com/*` 绑定 `gce_instance`，挂 `generic_node` 会被拒；必须改自定义指标，且采集链路本身要有「断档」告警 |
 
 ## 作品集交付物（跑完补进来）
 
@@ -414,6 +456,8 @@ G monitoring dashboards list --format='table(displayName)'
 | `alert-uptime-production.json` | 主力 n8n 拨测失败告警（`prod-` 常驻，filter 锁 `cloudworkflowdone.com`） |
 | `dashboard-production.json` | 生产机常驻 dashboard（拨测曲线 + 纳管说明） |
 | `notification-channel-production.json` | `prod-email` 常驻邮件通道模板（`__EMAIL__` 用 sed 替换），**与 `lab07-email` 分开** |
+| `alert-host-production.json` | 生产机主机指标告警（5 条件，含采集断档） |
+| `hybrid/` | 跨云指标采集实现：`collect.py`、systemd service/timer、Ops Agent 覆盖配置、安装排错手册 |
 
 > 命令语法按本机 gcloud 591.0.0 的 `gcloud monitoring ... --help` 核准；
 > 指标名/单位核对自 [Ops Agent metrics](https://docs.cloud.google.com/monitoring/api/metrics_opsagent)，

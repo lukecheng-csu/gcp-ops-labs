@@ -21,7 +21,7 @@
       }
     }
   ],
-  "alertStrategy": { "autoClose": "600s" },
+  "alertStrategy": { "autoClose": "1800s" },
   "documentation": {
     "mimeType": "text/markdown",
     "content": "## 站点拨测失败\n\n练习 7 目标：`https://storage.googleapis.com/lukecheng-static-site/health.txt`，内容匹配 `OK`。\n\n破坏：把对象内容改成 `BROKEN`；修复：改回 `OK`。\n\n注意 GCS 有缓存，拨测可能延迟 1~2 个周期才失败/恢复，给 `Cache-Control: no-store`。"

@@ -7,7 +7,7 @@
 
 | 别名 | 角色 | 云 / 区域 | 公网 IP | 连接方式 | 监控覆盖 | 到期 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | 外部拨测 `/healthz`，**只读** | **2026-11-21 ⚠️** |
+| `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | **混合云深度纳管**：日志 + 5 个系统指标 + 外部拨测，全进 `lukechengtest` | **2026-11-21 ⚠️** |
 | `practice-web` | 练习靶机（练习 1/2/3/7 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent（练习 7 装） | 长期（Always Free） |
 
 ---
@@ -58,15 +58,39 @@ squid 只监听 `127.0.0.1:3128`，Mac 上是通过 SSH 转发 / Hysteria2 隧�
 练习 6 里 `gcloud` 报 `Unable to connect to proxy 127.0.0.1:3128 Connection refused`，**根因是这条转发没起来**，
 不是 Clash 端口写错（后来改用 Clash Verge 的 `7897` 是另一条路）。以后再看到 3128 报错，先查 `jump-us` 上的 squid 和本地转发。
 
-### 监控怎么接（零侵入）
+### 监控怎么接（混合云深度纳管，2026-11-09 已实装）
 
-**不装 Ops Agent。** 它不是 GCE 实例，没有 GCE 的服务账号自动鉴权；要装就得把 GCP 服务账号**私钥 JSON 放到这台腾讯云生产机**上
-（官方 Bare Metal / 非 GCP 主机走 ADC + `GOOGLE_APPLICATION_CREDENTIALS` 的路子）。对一台 12 天后到期的生产主力机，这笔安全账不划算。
+三条链路全部汇到同一个 GCP 项目 `lukechengtest`，跟 `practice-web` 在同一套监控里：
 
-改用**外部拨测**：Google 全球节点直接拨 `https://cloudworkflowdone.com/healthz`，内容匹配 `ok`，失败发邮件。
-机器上一个字节都不用改，配置全在 GCP 侧，随时可删。命令见 `07-monitoring-alerting/README.md`「扩展」章。
+| 数据 | 采集方 | 落到哪 |
+| --- | --- | --- |
+| syslog / 系统日志 | Ops Agent 2.73.0 的 Fluent Bit（默认 logging pipeline） | Cloud Logging，`resource.type=generic_node` |
+| CPU / 内存 / 根盘 / 负载 / n8n 容器数 | `hybrid-metrics` 每 60 秒（`systemd timer`） | `custom.googleapis.com/host/*` on `generic_node` |
+| 站点可用性 | 外部 uptime check `prod-n8n-health` | `monitoring.googleapis.com/uptime_check/check_passed` |
 
-代价说清楚：这样只能知道**「活着 / 挂了」**，看不到 CPU、内存、磁盘。要那些指标就得走上面那条装 Agent 的路，另外评估。
+**为什么内置指标不能用**（实测，不是猜）：Ops Agent 装好后凭证有效、日志正常，但它检测不到 GCE metadata
+（`resourcedetector.UnrecognizedPlatformResource`），把内置 `agent.googleapis.com/*` 指标挂到 `generic_node`，
+Cloud Monitoring 以 `unknown metric type` 拒收——200 个点里 195 个失败，CPU/内存/磁盘 **0 条入库**。
+这些内置指标绑定 `gce_instance` 资源，这是产品限制。
+
+解法：按官方文档把内置 host metrics 关掉（`default_pipeline.receivers: []`，日志 pipeline 保留），
+改由自建脚本把系统指标写成**自定义指标**——自定义指标允许挂 `generic_node`，语义也对。
+`generic_node` 标签：`node_id=jump-us` / `namespace=tencentcloud-na-ashburn` / `location=global`
+（`location` 只接受 GCP 区域或 `global`，填腾讯云的 `na-ashburn` 会被 `Unrecognized region or location` 拒收）。
+
+**凭证**：专用服务账号 `hybrid-ops-agent@lukechengtest.iam.gserviceaccount.com`，
+只有 `roles/monitoring.metricWriter` + `roles/logging.logWriter` 两个角色；
+key 在 `/etc/google/auth/application_default_credentials.json`（`0400 root:root`），
+通过 `/etc/systemd/system.conf` 的 `DefaultEnvironment` 注入 Ops Agent 进程。
+**仓库不含任何密钥**；迁移或到期时记得删 GCP 侧的那把 key。
+
+**云上已创建**：`prod-n8n-health`（拨测）、`prod-n8n-overview`（dashboard）、
+`prod-n8n-health-failed` + `prod-n8n-host-degraded`（告警策略）。
+告警暂时**没绑邮件通道**，控制台能看事件；收件邮箱定了再接 `prod-email`。
+实现与卸载步骤见 `07-monitoring-alerting/hybrid/README.md`，命令见 07 README「扩展」章。
+
+> 自定义指标按样本量计费：5 个序列 × 1 点/分钟 ≈ 21.6 万点/月，金额很小但**不是零**。
+> 在 Cloud Monitoring 的 Metrics Management 页可以看到实际用量。
 
 ### 红线
 
@@ -98,8 +122,10 @@ squid 只监听 `127.0.0.1:3128`，Mac 上是通过 SSH 转发 / Hysteria2 隧�
 
 - **命名隔离**：练习临时资源 `lab07-*`，生产常驻资源 `prod-*`。清理脚本按前缀过滤，绝不误删。
 - **破坏只打靶机**：所有「故意搞坏」的动作限定在 `practice-web`；生产机只观测、不扰动。
-- **凭证不落盘、不入库**：台账只记别名和密钥**路径**，不记密钥内容、密码、Token。
+- **凭证不落盘、不入库**：台账只记别名和密钥**路径**，不记密钥内容、密码、Token。跨云主机的 GCP 凭证单独走最小权限服务账号，一台机器一把 key。
+- **跨云分工**：非 GCE 主机不要指望云厂商 Agent 的内置指标（绑定自家资源类型）；日志可以用 Agent，系统指标改走自定义指标 + `generic_node`，外部拨测兜底可用性。
 - **先只读探测再登记**：每台新机器接入时先跑一遍 `ssh` 只读巡检（OS / 容器 / 磁盘 / 监听端口 / 健康端点），把实测值写进表，别抄配置文档。
+- **采集链路自己也要被监控**：主机指标断了之后阈值告警全都不会响，所以 `prod-n8n-host-degraded` 里专门有一条「采集断档 > 5 分钟」。
 
 ## 巡检速查
 
@@ -107,7 +133,9 @@ squid 只监听 `127.0.0.1:3128`，Mac 上是通过 SSH 转发 / Hysteria2 隧�
 # 生产机（只读）
 ssh jump-us 'cat /etc/os-release | grep PRETTY_NAME; \
   docker ps --format "{{.Names}} {{.Status}}"; df -h / | tail -1; \
-  curl -fsS http://127.0.0.1:5678/healthz; echo'
+  curl -fsS http://127.0.0.1:5678/healthz; echo; \
+  systemctl is-active google-cloud-ops-agent hybrid-metrics.timer; \
+  journalctl -u hybrid-metrics.service -n 3 --no-pager | tail -3'
 
 # 练习靶机（只读）
 ssh -i ~/.ssh/google_compute_engine -o StrictHostKeyChecking=no \

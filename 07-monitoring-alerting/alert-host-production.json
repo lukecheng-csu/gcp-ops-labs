@@ -1,0 +1,74 @@
+{
+  "displayName": "prod-n8n-host-degraded",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "根盘使用率 > 85%（持续 5 分钟）",
+      "conditionThreshold": {
+        "filter": "resource.type = \"generic_node\" AND resource.labels.node_id = \"jump-us\" AND metric.type = \"custom.googleapis.com/host/disk_used_percent\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 85,
+        "duration": "300s",
+        "aggregations": [
+          { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+        ],
+        "trigger": { "count": 1 }
+      }
+    },
+    {
+      "displayName": "CPU > 90%（持续 5 分钟）",
+      "conditionThreshold": {
+        "filter": "resource.type = \"generic_node\" AND resource.labels.node_id = \"jump-us\" AND metric.type = \"custom.googleapis.com/host/cpu_utilization\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 90,
+        "duration": "300s",
+        "aggregations": [
+          { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+        ],
+        "trigger": { "count": 1 }
+      }
+    },
+    {
+      "displayName": "内存 > 90%（持续 5 分钟）",
+      "conditionThreshold": {
+        "filter": "resource.type = \"generic_node\" AND resource.labels.node_id = \"jump-us\" AND metric.type = \"custom.googleapis.com/host/memory_utilization\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 90,
+        "duration": "300s",
+        "aggregations": [
+          { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+        ],
+        "trigger": { "count": 1 }
+      }
+    },
+    {
+      "displayName": "n8n 容器数 < 3（持续 2 分钟）",
+      "conditionThreshold": {
+        "filter": "resource.type = \"generic_node\" AND resource.labels.node_id = \"jump-us\" AND metric.type = \"custom.googleapis.com/host/n8n_containers_up\"",
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 3,
+        "duration": "120s",
+        "aggregations": [
+          { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+        ],
+        "trigger": { "count": 1 }
+      }
+    },
+    {
+      "displayName": "采集断档 > 5 分钟（Agent/timer 挂了）",
+      "conditionAbsent": {
+        "filter": "resource.type = \"generic_node\" AND resource.labels.node_id = \"jump-us\" AND metric.type = \"custom.googleapis.com/host/cpu_utilization\"",
+        "duration": "300s",
+        "aggregations": [
+          { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
+        ],
+        "trigger": { "count": 1 }
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "1800s" },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "## 主力 n8n 主机指标异常（生产 · 混合云）\n\n主机：腾讯云轻量 `lhins-js6lgbt` / `43.165.125.114` / Rocky Linux 9.4，`node_id=jump-us`。\n\n指标来自自建采集 `hybrid-metrics`（每 60 秒写 `custom.googleapis.com/host/*` 到 `generic_node`），不是 Ops Agent 内置指标——内置的 `agent.googleapis.com/*` 在非 GCE 机器上会被 Cloud Monitoring 拒收。\n\n**排查顺序**（只读，禁止破坏演练）：\n\n1. `ssh jump-us 'systemctl is-active hybrid-metrics.timer; journalctl -u hybrid-metrics.service -n 30 --no-pager'`\n2. `ssh jump-us 'docker ps; df -h /; free -h; uptime; curl -fsS http://127.0.0.1:5678/healthz'`\n3. Cloud Logging 里看 syslog：`gcloud logging read 'resource.type=\"generic_node\"' --freshness=30m --limit=20`\n\n**「采集断档」这条最要紧**：它响说明指标本身不写了，可能是 timer 停了、凭证过期、key 被删、机器到期（**2026-11-21**）或网络断了——此时其他几条阈值告警都不会响，别误以为一切正常。\n\n`n8n_containers_up = -1` 表示 `docker ps` 查询失败，同样会触发「容器数 < 3」。\n\n台账见 `MANAGED_HOSTS.md`，采集实现与卸载步骤见 `hybrid/README.md`。"
+  }
+}

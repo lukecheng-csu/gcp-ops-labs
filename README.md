@@ -14,7 +14,7 @@ Hands-on labs on Google Cloud — each one is something I actually broke, debugg
 
 ## Managed Hosts
 
-Every machine I can reach and monitor is registered in **[MANAGED_HOSTS.md](MANAGED_HOSTS.md)** — the GCP lab VM, plus the production n8n host on Tencent Cloud (`jump-us`). The production box is monitored by external uptime check only; no agent is installed on it and it never takes part in break-fix drills.
+Every machine I can reach and monitor is registered in **[MANAGED_HOSTS.md](MANAGED_HOSTS.md)** — the GCP lab VM, plus the production n8n host on Tencent Cloud (`jump-us`). It's a real hybrid setup: syslog via Ops Agent, host metrics as custom metrics on `generic_node` (see [07-monitoring-alerting/hybrid](07-monitoring-alerting/hybrid/)), and an external uptime check, all landing in the same Cloud Monitoring project. The production box never takes part in break-fix drills.
 
 ## Roadmap
 
