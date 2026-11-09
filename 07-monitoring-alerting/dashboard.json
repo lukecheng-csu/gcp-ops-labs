@@ -1,0 +1,84 @@
+{
+  "displayName": "lab07-ops-overview",
+  "gridLayout": {
+    "columns": 2,
+    "widgets": [
+      {
+        "title": "练习 6 事故复盘 · RTO 37 分 26 秒（真实实测）",
+        "text": {
+          "content": "## 练习 6 PITR 事故时间线（2026-11-09 UTC）\n\n| 阶段 | 区间 | 耗时 |\n| --- | --- | --- |\n| 故障：DROP TABLE orders | 03:09:21 | — |\n| 等 WAL 归档窗口越过锚点 | 03:09:21 → 03:13:45 | 4m24s |\n| 取证定锚 + 人工决策发起 clone | 03:13:45 → 03:18:19 | 4m34s |\n| clone A 本体 | 03:18:19 → 03:45:19 | 26m59s |\n| 白名单 + 验证通过 | 03:45:19 → 03:46:47 | 1m28s |\n| **合计 RTO** | **03:09:21 → 03:46:47** | **37m26s** |\n\n结论：clone 永远是最大头；4m34s 纯人工空档说明 **runbook 熟练度就是 RTO**。\n本练习要练的，就是把「发现」这一段从人肉变成监控告警。\n\n详细记录见 `06-cloudsql-pitr/README.md`。",
+          "format": "MARKDOWN"
+        }
+      },
+      {
+        "title": "VM CPU 利用率（hypervisor 指标，不装 Agent 也有）",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "resource.type=\"gce_instance\" AND metric.type=\"compute.googleapis.com/instance/cpu/utilization\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_MEAN",
+                    "crossSeriesReducer": "REDUCE_MEAN"
+                  }
+                }
+              },
+              "plotType": "LINE",
+              "targetAxis": "Y1"
+            }
+          ],
+          "yAxis": { "label": "CPU %", "scale": "LINEAR" },
+          "chartOptions": { "mode": "COLOR" }
+        }
+      },
+      {
+        "title": "根盘使用率 %（Ops Agent 指标，dd 灌盘会看到抬升）",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "resource.type=\"gce_instance\" AND metric.type=\"agent.googleapis.com/disk/percent_used\" AND metric.labels.state=\"used\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_MEAN",
+                    "crossSeriesReducer": "REDUCE_MEAN"
+                  }
+                }
+              },
+              "plotType": "LINE",
+              "targetAxis": "Y1"
+            }
+          ],
+          "yAxis": { "label": "used %", "scale": "LINEAR" },
+          "chartOptions": { "mode": "COLOR" }
+        }
+      },
+      {
+        "title": "Uptime 检查结果（1=通过，0=失败）",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_NEXT_OLDER",
+                    "crossSeriesReducer": "REDUCE_MEAN"
+                  }
+                }
+              },
+              "plotType": "LINE",
+              "targetAxis": "Y1"
+            }
+          ],
+          "yAxis": { "label": "passed", "scale": "LINEAR" },
+          "chartOptions": { "mode": "COLOR" }
+        }
+      }
+    ]
+  }
+}

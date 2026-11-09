@@ -129,7 +129,7 @@ gcloud beta compute backend-buckets update static-site-backend \
 
 - **5 TF 进阶**：GCS backend + state lock；modules；workspaces（dev/prod）。破坏：两终端同时 apply 看 lock 报错、注释 backend 后看「全要重建」恐怖场面。
 - **6 Cloud SQL**：自动备份 + PITR + HA。破坏：DROP TABLE 后 PITR 恢复、failover 实测。**不在免费额度，练完立刻删。**
-- **7 监控**：Ops Agent + dashboard + uptime + alerting。破坏：`dd` 灌满磁盘触发告警、停 Ops Agent 看断档。
+- **7 监控**：Ops Agent + dashboard + uptime + alerting。破坏：`dd` 灌满磁盘触发告警、停 Ops Agent 看断档。**2026-11-09 材料已备好（可直接照敲的 runbook + 4 份配置）：[07-monitoring-alerting/](07-monitoring-alerting/README.md)**，复用练习 1 的 VM + 练习 3 的 GCS 桶，不新建计费资源；配好后真触发一次收邮件。
 - **8 Cloud Run**：FastAPI/Express + Dockerfile + Artifact Registry + Cloud Run。破坏：环境变量改错 500、sleep 超时/OOM、收 IAM 权限 403。
 - **9 CI/CD**：GitHub Actions + Workload Identity Federation（无密钥）+ Cloud Run 部署。破坏：收 SA 权限看挂在哪步、部署坏版本用 traffic 回滚。
 - **10 IAM**：resource-level 最小权限 + Data Access audit log。破坏：给 SA 加 editor 看它多能干、停用 SA 看报错。

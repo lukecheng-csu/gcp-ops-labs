@@ -1,0 +1,12 @@
+{
+  "type": "email",
+  "displayName": "lab07-email",
+  "description": "练习 7 告警邮件通道（练完删）",
+  "labels": {
+    "email_address": "__EMAIL__"
+  },
+  "enabled": true,
+  "userLabels": {
+    "lab": "lab07"
+  }
+}
