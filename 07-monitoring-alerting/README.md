@@ -323,6 +323,18 @@ G monitoring alerts list --filter='state=OPEN' --limit=5
 SSH 'sudo rm -f /tmp/lab07-fill; df -h / | tail -1'
 ```
 
+#### 快速复现：不想再等 15 分钟就换 `fallocate`
+
+这台 20G 盘实测 `dd` 只有 ~10 MB/s，9G 要跑 15 分钟；`fallocate` 是**秒级**分配真实磁盘块，`df` 和 Ops Agent 指标都认，效果一样。从 44% 起分配 **7.5G** → Agent 指标约 79%，稳过 75 阈值，且不碰 90% 红线：
+
+```bash
+SSH 'sudo fallocate -l 7.5G /tmp/lab07-fill; df -h / | tail -1'   # 秒级完成，等 2~4 分钟收触发信
+SSH 'sudo rm -f /tmp/lab07-fill; df -h / | tail -1'               # 等 2~4 分钟收恢复信
+```
+
+> 严格照练习走就用上面的 `dd`，想快速再验一轮用 `fallocate`。**两者别同时开** —— 上一轮就是删完文件又开了第二轮 dd，结果事件一直 OPEN、恢复信不来。
+> 收尾顺序永远是：**先确认没有 dd/fallocate 在跑，再删文件**。
+
 ### 4.2 Uptime 告警
 
 ```bash
