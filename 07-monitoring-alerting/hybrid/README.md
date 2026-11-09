@@ -1,8 +1,10 @@
 # 混合云主机指标采集（非 GCE → Cloud Monitoring）
 
-> **状态：2026-11-09 已在 `jump-us` 实装并跑通。** 5 个指标每 60 秒写入 GCP，
-> `generic_node` / `node_id=jump-us`；云上拨测、dashboard、两条告警策略均已创建。
-> 下面的「安装」章节是复现与迁移用的记录，不需要再跑一遍。
+> **状态：2026-11-09 21:00 已清场，当前未部署。** 上一轮为验证方案跑通过一次，随后把云上资源、
+> 专用服务账号、生产机上的 Ops Agent / 凭证 / 采集脚本 / 定时器全部拆除，等你手敲一遍。
+> 下面「从零安装」是**可以照敲的完整步骤**（主 runbook 里对应 B1~B4，见 [`../README.md`](../README.md) 扩展章）；
+> 想再回到干净起点，用主 runbook 的「完整归零」。
+> **跑之前先确认 `hybrid-ops-agent` 服务账号已被删掉** —— 别跳过第 0 步直接装 Agent，会 401。
 
 ## 为什么需要它
 
@@ -42,32 +44,87 @@ Agent 检测不到 GCE metadata 时会退化成 `generic_node`，Cloud Monitorin
 **仓库里不含任何密钥。** 凭证由 GCP 侧生成后单独放到
 `/etc/google/auth/application_default_credentials.json`（`0400 root:root`）。
 
-## 安装（在生产机上，root）
+## 从零安装（B1~B4，顺序别跳）
+
+### 0. GCP 侧：建最小权限服务账号 + 发 key（Mac）
 
 ```bash
-# 1. 放文件
-mkdir -p /opt/hybrid-metrics
-# 从 Mac：scp collect.py hybrid-metrics.service hybrid-metrics.timer root@jump-us:/opt/hybrid-metrics/
-cd /opt/hybrid-metrics
-cp hybrid-metrics.service /etc/systemd/system/
-cp hybrid-metrics.timer /etc/systemd/system/
-chmod 0644 collect.py
+export PROJECT=lukechengtest
+SA="hybrid-ops-agent@$PROJECT.iam.gserviceaccount.com"
+gcloud iam service-accounts create hybrid-ops-agent \
+  --display-name="Hybrid Ops Agent (jump-us)" --project=$PROJECT
+for R in roles/monitoring.metricWriter roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding $PROJECT \
+    --member="serviceAccount:$SA" --role="$R" --quiet
+done
+KEY=/tmp/hybrid-ops-agent-key.json
+umask 077
+gcloud iam service-accounts keys create "$KEY" --iam-account="$SA" --project=$PROJECT
+scp "$KEY" jump-us:/root/.hybrid-key.tmp.json
+rm -f "$KEY"                       # 本地临时副本立刻删，仓库里不许出现 key
+```
 
-# 2. 隔离的 Python 环境（只装两个包，不污染系统 Python）
-python3 -m venv /opt/hybrid-metrics/venv
-/opt/hybrid-metrics/venv/bin/pip install -q psutil google-auth requests \
-  -i https://mirrors.tencent.com/pypi/simple/
-# requests 不能省：google-auth 的 Request transport 依赖它，缺了 import 直接失败
+> 只给「写指标 + 写日志」两个角色。上一轮清场把这个 SA 删了，所以**每次重敲都要重新建、重新发 key**。
 
-# 3. 关掉 Ops Agent 内置指标（否则每分钟刷屏），日志保留
-cp /opt/hybrid-metrics/ops-agent-config.yaml /etc/google-cloud-ops-agent/config.yaml
-systemctl restart google-cloud-ops-agent
+### 1. 生产机：凭证落位 + 注入 systemd（root）
 
-# 4. 起定时器
+```bash
+ssh jump-us 'set -e
+mkdir -p /etc/google/auth; chmod 0700 /etc/google/auth
+mv /root/.hybrid-key.tmp.json /etc/google/auth/application_default_credentials.json
+chown root:root /etc/google/auth/application_default_credentials.json
+chmod 0400 /etc/google/auth/application_default_credentials.json
+if ! grep -q GOOGLE_APPLICATION_CREDENTIALS /etc/systemd/system.conf; then
+  printf "%s\n" "DefaultEnvironment=\"GOOGLE_APPLICATION_CREDENTIALS=/etc/google/auth/application_default_credentials.json\"" >> /etc/systemd/system.conf
+fi
 systemctl daemon-reload
+ls -l /etc/google/auth/application_default_credentials.json'
+```
+
+### 2. 生产机：装 Ops Agent（只留日志）
+
+```bash
+ssh jump-us 'cd /root && curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh \
+  && bash add-google-cloud-ops-agent-repo.sh --also-install'
+```
+
+> 此刻内置指标会刷 `failed to export metrics`，**是预期现象**，第 4 步关掉即可；日志侧已经通了。
+
+### 3. 放采集文件 + 隔离的 Python 环境
+
+```bash
+# 从 Mac（目录 07-monitoring-alerting）
+ssh jump-us 'mkdir -p /opt/hybrid-metrics'
+scp collect.py hybrid-metrics.service hybrid-metrics.timer \
+    ops-agent-config.yaml README.md jump-us:/opt/hybrid-metrics/
+
+ssh jump-us 'set -e
+cd /opt/hybrid-metrics
+cp hybrid-metrics.service hybrid-metrics.timer /etc/systemd/system/
+chmod 0644 collect.py
+python3 -m venv /opt/hybrid-metrics/venv
+/opt/hybrid-metrics/venv/bin/pip install -q --disable-pip-version-check \
+  psutil google-auth requests -i https://mirrors.tencent.com/pypi/simple/'
+```
+
+> **`requests` 不能省**：google-auth 的 Request transport 依赖它，缺了 import 直接失败（上一轮踩过）。
+
+### 4. 关内置指标 + 起定时器
+
+```bash
+ssh jump-us 'set -e
+cp /opt/hybrid-metrics/ops-agent-config.yaml /etc/google-cloud-ops-agent/config.yaml
+systemctl daemon-reload
+systemctl restart google-cloud-ops-agent
 systemctl enable --now hybrid-metrics.timer
 systemctl start hybrid-metrics.service
+sleep 2
+journalctl -u hybrid-metrics.service -n 5 --no-pager | tail -5
+systemctl list-timers hybrid-metrics.timer --no-pager | head -3'
 ```
+
+> ✅ 首次成功会打印 `wrote 5 series`。手动跑紧挨 timer 时报 `points ... too frequent`
+> 是正常的撞点，脚本已做幂等跳过（打 WARN、返回 0），不是故障。
 
 ## 验证
 
@@ -110,16 +167,32 @@ curl -sS -G -H "Authorization: Bearer $TOKEN" \
 | `n8n_containers_up = -1` | 服务以 root 跑吗、`docker` 在不在 PATH、docker daemon 是否活着 |
 | Ops Agent 又开始刷 export 错误 | `config.yaml` 的 `default_pipeline.receivers` 被覆盖了，重新 scp 该文件并重启 |
 
-## 卸载 / 迁移
+## 卸载 / 完整归零
+
+**云上那一半别漏**（拨测 / dashboard / 两条告警 / `prod-email` / 专用服务账号），完整可照敲脚本见
+[主 runbook「完整归零」](../README.md)。下面是生产机这一半：
 
 ```bash
-systemctl disable --now hybrid-metrics.timer
-rm -f /etc/systemd/system/hybrid-metrics.{service,timer}
-rm -rf /opt/hybrid-metrics
-# 凭证：确认没有别的服务在用再删
-rm -f /etc/google/auth/application_default_credentials.json
-# systemd 全局 DefaultEnvironment 那行也要手工去掉，然后 daemon-reload
+ssh jump-us 'set -e
+systemctl disable --now hybrid-metrics.timer 2>/dev/null || true
+systemctl stop google-cloud-ops-agent 2>/dev/null || true
+systemctl disable google-cloud-ops-agent 2>/dev/null || true
+dnf remove -y google-cloud-ops-agent >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/hybrid-metrics.service /etc/systemd/system/hybrid-metrics.timer
+rm -rf /opt/hybrid-metrics /etc/google-cloud-ops-agent /etc/google/auth
+rm -f /etc/yum.repos.d/google-cloud-ops-agent.repo /root/add-google-cloud-ops-agent-repo.sh
+sed -i "/^DefaultEnvironment=.*GOOGLE_APPLICATION_CREDENTIALS/d" /etc/systemd/system.conf
+systemctl daemon-reload
+systemctl reset-failed hybrid-metrics.service 2>/dev/null || true'
+
+# GCP 侧的服务账号（删了才会回到真正的干净起点）
+gcloud iam service-accounts delete hybrid-ops-agent@lukechengtest.iam.gserviceaccount.com \
+  --project=lukechengtest --quiet
 ```
+
+> 复核：`rpm -qa | grep google-cloud-ops` 无、`systemctl list-units --all | grep -iE 'hybrid|ops-agent'` 无、
+> `docker ps` 三个容器仍在、`curl /healthz` 仍返回 `{"status":"ok"}`。
+> 自定义指标的**定义**不用删（API 不支持手删），没有数据写入就不计费，下次重敲继续写同名指标。
 
 > 这台轻量服务器 **2026-11-21 到期**。迁移到新机器时：换 `HYBRID_NODE_ID` / `HYBRID_NAMESPACE`
 > 两个环境变量即可（`HYBRID_LOCATION` 保持 `global`），指标定义和 dashboard filter 跟着改 `node_id`。

@@ -1,14 +1,16 @@
 # 被管理机器台账
 
 > 这个仓库里所有「能连上去、能监控」的机器都登记在这。新增机器先补这张表，再写练习材料。
-> 最后核对：**2026-11-09**（只读探测，未改动任何机器）。
+> 最后核对：**2026-11-09 21:00（清场后）** —— 上一轮混合云纳管验证跑通后已全部拆除，
+> 云上监控资源、专用服务账号、生产机上的 Agent/凭证/采集脚本/定时器都已归零，等待手敲一遍。
+> 机器本身（三容器、Caddy、squid、Hysteria2）全程未动。
 
 ## 总览
 
 | 别名 | 角色 | 云 / 区域 | 公网 IP | 连接方式 | 监控覆盖 | 到期 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | **混合云深度纳管**：日志 + 5 个系统指标 + 外部拨测，全进 `lukechengtest` | **2026-11-21 ⚠️** |
-| `practice-web` | 练习靶机（练习 1/2/3/7 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent（练习 7 装） | 长期（Always Free） |
+| `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | **当前未接（清场）**；目标：日志 + 5 个系统指标 + 外部拨测全进 `lukechengtest`，手敲见 07 README 扩展章 B0~B6 | **2026-11-21 ⚠️** |
+| `practice-web` | 练习靶机（练习 1/2/3/7 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent **未装**（练习 7 第 0.3 步装） | 长期（Always Free） |
 
 ---
 
@@ -58,39 +60,38 @@ squid 只监听 `127.0.0.1:3128`，Mac 上是通过 SSH 转发 / Hysteria2 隧�
 练习 6 里 `gcloud` 报 `Unable to connect to proxy 127.0.0.1:3128 Connection refused`，**根因是这条转发没起来**，
 不是 Clash 端口写错（后来改用 Clash Verge 的 `7897` 是另一条路）。以后再看到 3128 报错，先查 `jump-us` 上的 squid 和本地转发。
 
-### 监控怎么接（混合云深度纳管，2026-11-09 已实装）
+### 监控怎么接（混合云深度纳管 · 当前未部署，等待手敲）
 
-三条链路全部汇到同一个 GCP 项目 `lukechengtest`，跟 `practice-web` 在同一套监控里：
+**目标架构**：三条链路汇到同一个 GCP 项目 `lukechengtest`，跟 `practice-web` 在同一套监控里。
 
 | 数据 | 采集方 | 落到哪 |
 | --- | --- | --- |
-| syslog / 系统日志 | Ops Agent 2.73.0 的 Fluent Bit（默认 logging pipeline） | Cloud Logging，`resource.type=generic_node` |
+| syslog / 系统日志 | Ops Agent 的 Fluent Bit（默认 logging pipeline） | Cloud Logging，`resource.type=generic_node` |
 | CPU / 内存 / 根盘 / 负载 / n8n 容器数 | `hybrid-metrics` 每 60 秒（`systemd timer`） | `custom.googleapis.com/host/*` on `generic_node` |
 | 站点可用性 | 外部 uptime check `prod-n8n-health` | `monitoring.googleapis.com/uptime_check/check_passed` |
 
-**为什么内置指标不能用**（实测，不是猜）：Ops Agent 装好后凭证有效、日志正常，但它检测不到 GCE metadata
-（`resourcedetector.UnrecognizedPlatformResource`），把内置 `agent.googleapis.com/*` 指标挂到 `generic_node`，
-Cloud Monitoring 以 `unknown metric type` 拒收——200 个点里 195 个失败，CPU/内存/磁盘 **0 条入库**。
-这些内置指标绑定 `gce_instance` 资源，这是产品限制。
+**为什么内置指标不能用**（上一轮实测，不是猜）：Ops Agent 装好后凭证有效、日志正常，但它检测不到
+GCE metadata（`resourcedetector.UnrecognizedPlatformResource`），把内置 `agent.googleapis.com/*` 指标挂到
+`generic_node`，Cloud Monitoring 以 `unknown metric type` 拒收——200 个点里 195 个失败，
+CPU/内存/磁盘 **0 条入库**。这些内置指标绑定 `gce_instance` 资源，是产品限制。
 
 解法：按官方文档把内置 host metrics 关掉（`default_pipeline.receivers: []`，日志 pipeline 保留），
 改由自建脚本把系统指标写成**自定义指标**——自定义指标允许挂 `generic_node`，语义也对。
 `generic_node` 标签：`node_id=jump-us` / `namespace=tencentcloud-na-ashburn` / `location=global`
 （`location` 只接受 GCP 区域或 `global`，填腾讯云的 `na-ashburn` 会被 `Unrecognized region or location` 拒收）。
 
-**凭证**：专用服务账号 `hybrid-ops-agent@lukechengtest.iam.gserviceaccount.com`，
-只有 `roles/monitoring.metricWriter` + `roles/logging.logWriter` 两个角色；
-key 在 `/etc/google/auth/application_default_credentials.json`（`0400 root:root`），
-通过 `/etc/systemd/system.conf` 的 `DefaultEnvironment` 注入 Ops Agent 进程。
-**仓库不含任何密钥**；迁移或到期时记得删 GCP 侧的那把 key。
+**凭证模型（B1 会重建）**：专用服务账号 `hybrid-ops-agent@lukechengtest.iam.gserviceaccount.com`
+（上一轮清场已删除），只授 `roles/monitoring.metricWriter` + `roles/logging.logWriter`；
+key 放 `/etc/google/auth/application_default_credentials.json`（`0400 root:root`），
+通过 `/etc/systemd/system.conf` 的 `DefaultEnvironment` 注入 Ops Agent 进程。**仓库不含任何密钥**。
 
-**云上已创建**：`prod-n8n-health`（拨测）、`prod-n8n-overview`（dashboard）、
-`prod-n8n-health-failed` + `prod-n8n-host-degraded`（告警策略）。
-告警暂时**没绑邮件通道**，控制台能看事件；收件邮箱定了再接 `prod-email`。
-实现与卸载步骤见 `07-monitoring-alerting/hybrid/README.md`，命令见 07 README「扩展」章。
+**当前云上状态：全空**。手敲完成后应重建：`prod-n8n-health`（拨测）、`prod-n8n-overview`（dashboard）、
+`prod-n8n-health-failed` + `prod-n8n-host-degraded`（告警）、`prod-email`（常驻邮件通道）。
+完整步骤见 `07-monitoring-alerting/README.md` 扩展章 **B0~B6**，实现细节与排错见
+`07-monitoring-alerting/hybrid/README.md`；想回到干净起点用主 runbook 的「完整归零」。
 
-> 自定义指标按样本量计费：5 个序列 × 1 点/分钟 ≈ 21.6 万点/月，金额很小但**不是零**。
-> 在 Cloud Monitoring 的 Metrics Management 页可以看到实际用量。
+> 自定义指标按样本量计费：5 个序列 × 1 点/分钟 ≈ 21.6 万点/月，金额很小但**不是零**；
+> 清场后无数据写入就不产生这部分费用。在 Metrics Management 页可看实际用量。
 
 ### 红线
 
@@ -125,7 +126,7 @@ key 在 `/etc/google/auth/application_default_credentials.json`（`0400 root:roo
 - **凭证不落盘、不入库**：台账只记别名和密钥**路径**，不记密钥内容、密码、Token。跨云主机的 GCP 凭证单独走最小权限服务账号，一台机器一把 key。
 - **跨云分工**：非 GCE 主机不要指望云厂商 Agent 的内置指标（绑定自家资源类型）；日志可以用 Agent，系统指标改走自定义指标 + `generic_node`，外部拨测兜底可用性。
 - **先只读探测再登记**：每台新机器接入时先跑一遍 `ssh` 只读巡检（OS / 容器 / 磁盘 / 监听端口 / 健康端点），把实测值写进表，别抄配置文档。
-- **采集链路自己也要被监控**：主机指标断了之后阈值告警全都不会响，所以 `prod-n8n-host-degraded` 里专门有一条「采集断档 > 5 分钟」。
+- **采集链路自己也要被监控**：主机指标断了之后阈值告警全都不会响，所以主机告警策略里专门设计了一条「采集断档 > 5 分钟」（配置在 `alert-host-production.json`，待手敲 B6 创建）。
 
 ## 巡检速查
 
@@ -136,11 +137,15 @@ ssh jump-us 'cat /etc/os-release | grep PRETTY_NAME; \
   curl -fsS http://127.0.0.1:5678/healthz; echo; \
   systemctl is-active google-cloud-ops-agent hybrid-metrics.timer; \
   journalctl -u hybrid-metrics.service -n 3 --no-pager | tail -3'
+# ↑ 干净起点下这两项会报 inactive / not-found，属正常；跑完 B3/B4 才应是 active
 
 # 练习靶机（只读）
 ssh -i ~/.ssh/google_compute_engine -o StrictHostKeyChecking=no \
   lukecheng@35.194.5.128 'df -h / | tail -1; systemctl is-active google-cloud-ops-agent'
 
-# 拨测配置当前状态（GCP 侧）
-gcloud monitoring uptime list-configs --format='table(displayName,name)'   # 看完整目标加 --format=yaml
+# 云上资源当前状态（干净起点下四条都应是空的）
+gcloud monitoring dashboards list --format='table(displayName,name)'
+gcloud monitoring policies list --format='table(displayName,enabled)'
+gcloud monitoring uptime list-configs --format='table(displayName,name)'
+gcloud iam service-accounts list --format='table(email,displayName)'
 ```
