@@ -1,0 +1,38 @@
+{
+  "displayName": "prod-n8n-overview",
+  "gridLayout": {
+    "columns": 2,
+    "widgets": [
+      {
+        "title": "主力 n8n · 外部拨测（1=通过，0=失败）",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.labels.host=\"cloudworkflowdone.com\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_NEXT_OLDER",
+                    "crossSeriesReducer": "REDUCE_MEAN"
+                  }
+                }
+              },
+              "plotType": "LINE",
+              "targetAxis": "Y1"
+            }
+          ],
+          "yAxis": { "label": "passed", "scale": "LINEAR" },
+          "chartOptions": { "mode": "COLOR" }
+        }
+      },
+      {
+        "title": "纳管说明 · 跨云只读监控",
+        "text": {
+          "content": "## 主力 n8n（腾讯云轻量 · 生产）\n\n| 项 | 值 |\n| --- | --- |\n| 实例 | `lhins-js6lgbt` / `na-ashburn` / `43.165.125.114` |\n| 系统 | Rocky Linux 9.4 |\n| 域名 | `cloudworkflowdone.com`（Cloudflare 代理） |\n| 业务 | `n8n-core` + `n8n-postgres` + `n8n-caddy` |\n| 兼任 | GCP 操作跳板机：squid `127.0.0.1:3128` + Hysteria2 |\n| 到期 | **2026-11-21** |\n\n**为什么只有一块拨测面板**：这台不是 GCE 实例，没有服务账号自动鉴权，装 Ops Agent 需要把 GCP 服务账号私钥放到腾讯云生产机上。对一台 12 天后到期的生产机不划算，所以只做**零侵入的外部拨测**——机器上不改任何东西，只回答「活着 / 挂了」，看不到 CPU、内存、磁盘。\n\n**不做破坏演练**。练习 7 的 `dd` 灌盘、停 Agent 只打 `practice-web`。\n\n台账见仓库根目录 `MANAGED_HOSTS.md`。",
+          "format": "MARKDOWN"
+        }
+      }
+    ]
+  }
+}

@@ -12,6 +12,10 @@ Hands-on labs on Google Cloud — each one is something I actually broke, debugg
 | 06 | [Cloud SQL PITR](06-cloudsql-pitr/) | Automated backups + WAL, measured RPO/RTO, pgAudit forensics → point-in-time clone |
 | 07 | [Monitoring, Alerting & Logging](07-monitoring-alerting/) | Ops Agent, dashboard, email notification channel, uptime check, real triggered alerts |
 
+## Managed Hosts
+
+Every machine I can reach and monitor is registered in **[MANAGED_HOSTS.md](MANAGED_HOSTS.md)** — the GCP lab VM, plus the production n8n host on Tencent Cloud (`jump-us`). The production box is monitored by external uptime check only; no agent is installed on it and it never takes part in break-fix drills.
+
 ## Roadmap
 
 Labs 08–13 (Cloud Run, CI/CD, IAM, cross-region HA, GKE, VMware migration): see **[ROADMAP.md](ROADMAP.md)**. Rule of thumb for every lab: build it first, then break it on purpose — teardown after each drill.

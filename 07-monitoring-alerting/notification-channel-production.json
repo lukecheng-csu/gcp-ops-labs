@@ -1,0 +1,13 @@
+{
+  "type": "email",
+  "displayName": "prod-email",
+  "description": "主力 n8n（jump-us）常驻告警邮件通道；练习 7 收尾只删 lab07-email，不动这条",
+  "labels": {
+    "email_address": "__EMAIL__"
+  },
+  "enabled": true,
+  "userLabels": {
+    "scope": "prod",
+    "managed_host": "jump-us"
+  }
+}
