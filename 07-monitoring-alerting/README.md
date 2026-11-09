@@ -311,6 +311,12 @@ curl -s -G -H "Authorization: Bearer $(gcloud auth print-access-token)" \
 G monitoring alerts list --filter='state=OPEN' --limit=5
 ```
 
+> **收不到邮件先别重配**（2026-11-09 实测）：
+> ① email 通道**不需要点验证链接** —— REST GET 里没有 `verificationStatus` 字段，即该类型无需验证、`enabled=true` 就能发。
+> ② 发件方是 `alerting-noreply@google.com`，163 / QQ 这类邮箱容易丢进**垃圾箱 / 广告邮件**，先加白名单再翻一遍。
+> ③ 通知只在事件**状态变化**时发（OPEN 一封、CLOSED 一封），**持续 OPEN 不会反复发**；想重收必须先让事件关闭，或换一条策略触发。
+> ④ 云上确认链路通没通，看 `monitoring.googleapis.com%2FViolationOpenEventv1` 日志里有没有 `terse_message`（有 = 告警引擎确实开了，剩下只是投递）。
+
 修复（会收到自动恢复通知，`autoClose=1800s`）：
 
 ```bash
@@ -674,7 +680,7 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 > `custom.googleapis.com/host/*` 的**指标定义**不用删（API 不支持手删）；没有数据写入就不计费，  
 > 下次手敲时新点会继续写进同名指标。删完再敲一遍，从速查章「开工三件事」开始即可。
 
-## 最容易翻车的 13 条
+## 最容易翻车的 14 条
 
 | #  | 坑                                           | 正确做法                                                                                        |
 | -- | ------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -691,6 +697,7 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 | 11 | 非 GCE 机器装完 Ops Agent 以为有指标了                 | 内置 `agent.googleapis.com/*` 绑定 `gce_instance`，挂 `generic_node` 会被拒；必须改自定义指标，且采集链路本身要有「断档」告警 |
 | 12 | 清场后从 B3 直接开敲                                | 上一轮把 `hybrid-ops-agent` 服务账号也删了，**必须先跑 B1 重建 SA 并发 key**，否则凭证缺失、指标写不进                       |
 | 13 | 新窗口直接敲 `SSH ...` 报 `hostname contains invalid characters` | `SSH()` / `HOST_IP` 是上个窗口临时定义的，新窗口要重敲「开工三件事」；应急可直接写全 `ssh -i ~/.ssh/google_compute_engine ... lukecheng@<IP>` |
+| 14 | 告警还 `OPEN` 时「再破坏一次」想重收邮件             | **持续 OPEN 不会重复发信**，通知只在状态变化（OPEN / CLOSED）时发。先删填充文件让事件关闭（收恢复信），再破坏才有新的触发信；想立刻测通道就走 4.2 的 uptime（另一条策略、全新事件） |
 
 ## 作品集交付物（跑完补进来）
 
