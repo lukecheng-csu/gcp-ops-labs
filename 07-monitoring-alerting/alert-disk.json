@@ -3,11 +3,11 @@
   "combiner": "OR",
   "conditions": [
     {
-      "displayName": "VM 根盘使用率 > 80%",
+      "displayName": "VM 根盘使用率 > 75%（Ops Agent 口径）",
       "conditionThreshold": {
         "filter": "resource.type = \"gce_instance\" AND metric.type = \"agent.googleapis.com/disk/percent_used\" AND metric.labels.state = \"used\"",
         "comparison": "COMPARISON_GT",
-        "thresholdValue": 80,
+        "thresholdValue": 75,
         "duration": "60s",
         "aggregations": [
           { "alignmentPeriod": "60s", "perSeriesAligner": "ALIGN_MEAN" }
@@ -19,6 +19,6 @@
   "alertStrategy": { "autoClose": "1800s" },
   "documentation": {
     "mimeType": "text/markdown",
-    "content": "## 磁盘要满了\n\n练习 7 的破坏演练：VM 上 `dd` 灌盘触发本告警。\n\n排查：`df -h /`、`du -xh / | sort -h | tail`；恢复：`sudo rm -f /tmp/lab07-fill`。\n\n指标来自 Ops Agent（`agent.googleapis.com/disk/percent_used`，单位 **0~100 百分比**，不是 0~1）。"
+    "content": "## 磁盘要满了\n\n练习 7 的破坏演练：VM 上 `dd` 灌盘触发本告警。\n\n排查：`df -h /`、`du -xh / | sort -h | tail`；恢复：`sudo rm -f /tmp/lab07-fill`。\n\n指标来自 Ops Agent（`agent.googleapis.com/disk/percent_used`，单位 **0~100 百分比**，不是 0~1）。\n\n> 2026-11-09 实测修正：该指标的 `state=used` **不含 reserved blocks**，比 `df -h` 低约 4 个点。`df -h /` = 84% 时指标只有 79.7%，阈值写 80 永远不触发（`alerts list` 一直是 0）。故阈值定 75，对齐真实指标口径，而不是对齐 df。"
   }
 }
