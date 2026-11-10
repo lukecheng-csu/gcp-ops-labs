@@ -1,0 +1,25 @@
+modules:
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200]
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: false
+
+  http_body_ok:
+    prober: http
+    timeout: 10s
+    http:
+      valid_status_codes: [200]
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: ip4
+      # 别写成 '(OK|...)'：BROKEN 里第 3、4 个字母就是 OK，子串会被当成通过（练习 7 实测踩过）。
+      # ^OK$ 要求整行就是 OK；n8n 的 {"status":"ok"} 走第二个分支。
+      fail_if_body_not_matches_regexp:
+        - '(?m)^OK$|status.{0,12}ok'

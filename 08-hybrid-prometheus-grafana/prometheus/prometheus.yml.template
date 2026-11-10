@@ -1,0 +1,86 @@
+# 渲染后才会出现 prometheus/prometheus.yml（本文件是模板）
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  scrape_timeout: 10s
+  external_labels:
+    lab: lab08
+    scope: hybrid-cloud
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 主机层：GCE 靶机走 VPC 内网，腾讯云生产机走公网 + 云防火墙白名单
+  - job_name: 'node-gce'
+    static_configs:
+      - targets: ['__GCE_PRIVATE_IP__:9100']
+        labels:
+          cloud: gcp
+          host: practice-web
+          role: lab-vm
+
+  - job_name: 'node-tencent'
+    static_configs:
+      - targets: ['__TENCENT_PUBLIC_IP__:9100']
+        labels:
+          cloud: tencent
+          host: jump-us
+          role: production
+
+  # 应用层：从外面按用户的方式访问一次，量状态码 / 可用性 / 响应时间
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ['https://storage.googleapis.com/lukecheng-static-site/index.html']
+        labels:
+          app: static-site
+          check: homepage
+      - targets: ['https://storage.googleapis.com/lukecheng-static-site/lab08-health.txt']
+        labels:
+          app: static-site
+          check: health-txt
+      - targets: ['https://cloudworkflowdone.com/healthz']
+        labels:
+          app: n8n
+          check: healthz
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # 应用层：内容必须对（lab08-health.txt 含 OK / n8n 含 status:ok），专门给破坏演练用
+  - job_name: 'blackbox-content'
+    metrics_path: /probe
+    params:
+      module: [http_body_ok]
+    static_configs:
+      - targets: ['https://storage.googleapis.com/lukecheng-static-site/lab08-health.txt']
+        labels:
+          app: static-site
+          check: health-content
+      - targets: ['https://cloudworkflowdone.com/healthz']
+        labels:
+          app: n8n
+          check: healthz-content
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115

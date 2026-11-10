@@ -1,0 +1,24 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'host', 'app']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  receiver: lab08-email
+
+receivers:
+  - name: lab08-email
+    email_configs:
+      - to: '__ALERT_EMAIL__'
+        from: '__ALERT_EMAIL__'
+        smarthost: 'smtp.163.com:25'
+        auth_username: '__ALERT_EMAIL__'
+        auth_password: '__SMTP_PASSWORD__'
+        require_tls: false
+        send_resolved: true
+
+# 说明：默认占位值不会真的发出邮件，但 Alertmanager 能正常启动、正常收告警、正常显示 resolved。
+# 想真收邮件：填 163 SMTP 授权码后重跑 render.sh 并 docker compose restart alertmanager。
+# 不发邮件也不影响练习：告警状态在 Prometheus /alerts、Alertmanager UI、Grafana 看板里都能看。

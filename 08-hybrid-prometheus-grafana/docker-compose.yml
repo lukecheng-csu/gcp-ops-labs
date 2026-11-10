@@ -1,0 +1,70 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lab08-prometheus
+    restart: unless-stopped
+    user: "0:0"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - blackbox
+      - alertmanager
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lab08-grafana
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: lab08admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: lab08-alertmanager
+    restart: unless-stopped
+    user: "0:0"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - am-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+
+  blackbox:
+    image: prom/blackbox-exporter:latest
+    container_name: lab08-blackbox
+    restart: unless-stopped
+    user: "0:0"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    expose:
+      - "9115"
+
+volumes:
+  prom-data:
+  grafana-data:
+  am-data:

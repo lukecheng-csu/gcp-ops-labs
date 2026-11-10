@@ -1,9 +1,13 @@
-# 路线图：练习 4–13（对齐 v2 阶梯 + Upwork 技能映射）
+# 路线图：练习 4–14（对齐 v2 阶梯 + Upwork 技能映射）
 
 > 本文件是 gcp-ops-labs 的官方练习路线图。练习 0–3 已完成（见上表），练习 4 起按此走。
 > 铁律（沿用 v2 阶梯三条总原则）：每练习两段式「先跑通 → 再破坏-修复」，破坏环节不许跳；免费红线内折腾；练完立刻拆资源。
+>
+> **2026-11-10 编号调整**：新增练习 8「混合云监控 Prometheus + Grafana」（海外客户 / Upwork 上最常要的那套，
+> 也是练习 7 云厂商自带方案的对照），插在原 8 前面；**原 8–13 顺延为 9–14**，内容不变。
+> 材料中提到「练习 8」的旧文字（如 GKE 那行的容器）现在指练习 9。
 
-## 一、总路线（练习 4–13，对齐 v2 阶梯原文）
+## 一、总路线（练习 4–14，对齐 v2 阶梯原文）
 
 | 练习 | 主题 | GCP 服务 | 难度 | 交付物 |
 |------|------|----------|------|--------|
@@ -11,12 +15,13 @@
 | 5 | Terraform 进阶 | GCS backend + modules + workspaces | ★★★☆ | state 存 GCS（带锁）、dev/prod 两环境同一 module |
 | 6 | 托管数据库 + 容灾 | Cloud SQL (PostgreSQL) + PITR + HA | ★★★ | 实测 RPO/RTO 的一次 PITR 恢复 |
 | 7 | 监控告警日志 | Cloud Monitoring + Logging + Uptime | ★★★ | 配好 dashboard + 告警，真触发一次收邮件 |
-| 8 | 无服务器 API | Cloud Run | ★★★ | serverless API，统一错误结构 |
-| 9 | CI/CD | GitHub Actions + Artifact Registry + Cloud Run | ★★★ | push main → 自动部署新 revision |
-| 10 | IAM / 安全纵深 | IAM + SA + audit logs | ★★★ | 「只能读特定 bucket」的 SA，拒绝记录进 audit log |
-| 11 | 跨区域 HA + LB | MIG + LB + health check，两 region | ★★★★ | 关一个 region 服务仍可用，记切换耗时 |
-| 12 | GKE 容器编排 | GKE (zonal) | ★★★★ | 练习 8 的容器跑 GKE，改副本数验证扩缩 |
-| 13 | VMware 迁移（模拟） | Compute Engine + Import Virtual Disk | ★★★★ | VMDK/OVA 导入 GCP 起 VM |
+| **8** | **混合云监控（新增）** | **临时 Compute VM + Prometheus / Grafana / Blackbox / Alertmanager** | ★★★★ | **一张看板同时看 GCP + 腾讯云两台主机和 Web 应用，6 条 PromQL 告警，3 轮破坏-修复** |
+| 9 | 无服务器 API | Cloud Run | ★★★ | serverless API，统一错误结构 |
+| 10 | CI/CD | GitHub Actions + Artifact Registry + Cloud Run | ★★★ | push main → 自动部署新 revision |
+| 11 | IAM / 安全纵深 | IAM + SA + audit logs | ★★★ | 「只能读特定 bucket」的 SA，拒绝记录进 audit log |
+| 12 | 跨区域 HA + LB | MIG + LB + health check，两 region | ★★★★ | 关一个 region 服务仍可用，记切换耗时 |
+| 13 | GKE 容器编排 | GKE (zonal) | ★★★★ | 练习 9 的容器跑 GKE，改副本数验证扩缩 |
+| 14 | VMware 迁移（模拟） | Compute Engine + Import Virtual Disk | ★★★★ | VMDK/OVA 导入 GCP 起 VM |
 
 阶段划分（阶梯原文）：**阶段二 4–7**（实施核心，单价翻倍）→ **阶段三 8–13**（进阶高单价）。
 
@@ -39,8 +44,8 @@
 
 ### 战略分层（按 ROI 分配时间，不改顺序）
 
-- **主线（cloud infra / 架构 / 迁移，高 ROI）**：4 → 5 → 6 → 9 → 11 → 13。这是「cloud/solution architecture」岗（中位 $50/hr）和「VMware 迁移」岗的硬证据，直接对着 15 年售前/解决方案 + 私有云背景。
-- **n8n / 自动化辅助线**：已有 n8n 作品集（n8n-inbox-agent-demo），练习 8 补一个「自己写代码的 API」即可，别再往 n8n 卷岗加码。
+- **主线（cloud infra / 架构 / 迁移，高 ROI）**：4 → 5 → 6 → **8** → 10 → 12 → 14。这是「cloud/solution architecture」岗（中位 $50/hr）和「VMware 迁移」岗的硬证据，直接对着 15 年售前/解决方案 + 私有云背景。练习 8 单列进主线：`Prometheus / Grafana / Alertmanager / Blackbox / hybrid cloud` 是 Upwork 监控类岗位的原话关键词，练习 7 的云厂商自带方案客户不搜这个。
+- **n8n / 自动化辅助线**：已有 n8n 作品集（n8n-inbox-agent-demo），练习 9（Cloud Run）补一个「自己写代码的 API」即可，别再往 n8n 卷岗加码。
 - **顺序不动**：阶梯的「建议顺序」已经对，只是**时间投入向高 ROI 练习倾斜**。
 
 ### 缺口（Upwork 有需求、阶梯没覆盖）
@@ -125,17 +130,18 @@ gcloud beta compute backend-buckets update static-site-backend \
 
 > Sources: [Troubleshoot Cloud CDN](https://cloud.google.com/cdn/docs/troubleshooting-steps) · [verify Cloud CDN cache hit — Stack Overflow](https://stackoverflow.com/questions/63274812/how-to-verify-if-a-cloud-cdn-response-was-a-cache-hit-or-comes-from-cdn)
 
-## 四、练习 5–13 要点速览（每练习背 3 个词就够）
+## 四、练习 5–14 要点速览（每练习背 3 个词就够）
 
 - **5 TF 进阶**：GCS backend + state lock；modules；workspaces（dev/prod）。破坏：两终端同时 apply 看 lock 报错、注释 backend 后看「全要重建」恐怖场面。
 - **6 Cloud SQL**：自动备份 + PITR + HA。破坏：DROP TABLE 后 PITR 恢复、failover 实测。**不在免费额度，练完立刻删。**
 - **7 监控**：Ops Agent + dashboard + uptime + alerting。破坏：`dd` 灌满磁盘触发告警、停 Ops Agent 看断档。**2026-11-09 材料已备好：[07-monitoring-alerting/](07-monitoring-alerting/README.md)**（可直接照敲的 runbook + 配置模板 + 手敲速查），复用练习 1 的 VM + 练习 3 的 GCS 桶，不新建计费资源；配好后真触发一次收邮件。扩展章还含腾讯云主力 n8n 的混合云纳管（B0~B6）。验证轮已跑通并**全部清场归零**，当前是干净起点，等手敲一遍。
-- **8 Cloud Run**：FastAPI/Express + Dockerfile + Artifact Registry + Cloud Run。破坏：环境变量改错 500、sleep 超时/OOM、收 IAM 权限 403。
-- **9 CI/CD**：GitHub Actions + Workload Identity Federation（无密钥）+ Cloud Run 部署。破坏：收 SA 权限看挂在哪步、部署坏版本用 traffic 回滚。
-- **10 IAM**：resource-level 最小权限 + Data Access audit log。破坏：给 SA 加 editor 看它多能干、停用 SA 看报错。
-- **11 HA**：instance template → MIG（两 region）→ LB + health check。破坏：health check 路径指错看实例被错误摘除、停一个 region 记切换耗时。
-- **12 GKE**：zonal 集群 + Deployment + Service + scale。破坏：镜像名错 ImagePullBackOff、limits 太小 OOMKilled、删 pod 看自愈。**节点计费，练完删 cluster。**
-- **13 VMware**：本地 VMware 造 VM → 导出 VMDK/OVA → 传 GCS → Import virtual disk → 起 VM。破坏：导入损坏 VMDK、virtio vs IDE 驱动不匹配。**别碰 VMware Engine（极贵）。**
+- **8 混合云监控（2026-11-10 新增）**：临时 e2-small 上自建 Prometheus + Grafana + Alertmanager + Blackbox；GCP 靶机 + 腾讯云生产机各装只读 node_exporter，Web 应用从外面拨（状态码 + 内容校验）；数据源和看板全部 as code，6 条 PromQL 告警。破坏：停采集器 / 改坏 health 内容 / 删对象。**材料已备：[08-hybrid-prometheus-grafana/](08-hybrid-prometheus-grafana/README.md)**；e2-small 计费，练完立刻删。
+- **9 Cloud Run**：FastAPI/Express + Dockerfile + Artifact Registry + Cloud Run。破坏：环境变量改错 500、sleep 超时/OOM、收 IAM 权限 403。
+- **10 CI/CD**：GitHub Actions + Workload Identity Federation（无密钥）+ Cloud Run 部署。破坏：收 SA 权限看挂在哪步、部署坏版本用 traffic 回滚。
+- **11 IAM**：resource-level 最小权限 + Data Access audit log。破坏：给 SA 加 editor 看它多能干、停用 SA 看报错。
+- **12 HA**：instance template → MIG（两 region）→ LB + health check。破坏：health check 路径指错看实例被错误摘除、停一个 region 记切换耗时。
+- **13 GKE**：zonal 集群 + Deployment + Service + scale。破坏：镜像名错 ImagePullBackOff、limits 太小 OOMKilled、删 pod 看自愈。**节点计费，练完删 cluster。**
+- **14 VMware**：本地 VMware 造 VM → 导出 VMDK/OVA → 传 GCS → Import virtual disk → 起 VM。破坏：导入损坏 VMDK、virtio vs IDE 驱动不匹配。**别碰 VMware Engine（极贵）。**
 
 ## 五、执行要求（WorkBuddy 协作约定）
 

@@ -1,0 +1,65 @@
+groups:
+  - name: lab08-host
+    rules:
+      - alert: HostDown
+        expr: up{job=~"node-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          layer: host
+        annotations:
+          summary: '{{ $labels.host }} 采集不到数据'
+          description: 'job={{ $labels.job }} instance={{ $labels.instance }} 连续 1 分钟 up=0。检查 node_exporter 容器、云防火墙 9100 白名单。'
+          runbook: 'docker ps --filter name=lab08-node-exporter；从监控机 curl http://<目标>:9100/metrics'
+
+      - alert: HostDiskHigh
+        expr: 100 - (node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} * 100) > 80
+        for: 2m
+        labels:
+          severity: warning
+          layer: host
+        annotations:
+          summary: '{{ $labels.host }} 根盘使用率超 80%'
+          description: '当前 {{ printf "%.1f" $value }}%。注意 node_exporter 口径与 df -h 差约 4 个点（root 预留块），别拿 df 直接对阈值。'
+
+      - alert: HostMemoryLow
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+        for: 2m
+        labels:
+          severity: warning
+          layer: host
+        annotations:
+          summary: '{{ $labels.host }} 可用内存不足 10%'
+          description: '当前 {{ printf "%.1f" $value }}%。e2-micro 本来就紧，监控自己被拖垮是真实盲区（练习 7 实测过）。'
+
+  - name: lab08-web
+    rules:
+      - alert: WebCheckFailed
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          layer: app
+        annotations:
+          summary: '{{ $labels.app }} / {{ $labels.check }} 外部访问失败'
+          description: 'instance={{ $labels.instance }}，状态码/连通性不满足。GCS 对象被删、Caddy/Cloudflare 异常都会命中。'
+
+      - alert: WebContentMismatch
+        expr: probe_success{job="blackbox-content"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          layer: app
+        annotations:
+          summary: '{{ $labels.app }} / {{ $labels.check }} 返回内容不对'
+          description: '破坏演练用：把 lab08-health.txt 从 OK 改成 DOWN 即触发（别用 BROKEN，它含 OK 子串）。上传带 --cache-control=no-store。'
+
+      - alert: WebSlow
+        expr: probe_duration_seconds{job=~"blackbox-.*"} > 2
+        for: 3m
+        labels:
+          severity: warning
+          layer: app
+        annotations:
+          summary: '{{ $labels.app }} 响应超过 2 秒'
+          description: '当前 {{ printf "%.2f" $value }}s。跨云拨测含公网抖动，阈值别设太紧。'

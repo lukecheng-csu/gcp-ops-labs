@@ -10,7 +10,15 @@
 | 别名 | 角色 | 云 / 区域 | 公网 IP | 连接方式 | 监控覆盖 | 到期 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | **当前未接（清场）**；目标：日志 + 5 个系统指标 + 外部拨测全进 `lukechengtest`，手敲见 07 README 扩展章 B0~B6 | **2026-11-21 ⚠️** |
-| `practice-web` | 练习靶机（练习 1/2/3/7 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent **未装**（练习 7 第 0.3 步装） | 长期（Always Free） |
+| `practice-web` | 练习靶机（练习 1/2/3/7/8 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent **未装**（练习 7 第 0.3 步装） | 长期（Always Free） |
+| `lab08-mon` | **练习 8 临时监控机**（跑 Prometheus / Grafana / Alertmanager / Blackbox） | GCP Compute / `us-central1-a` / **e2-small / 2GB / Debian 12** | 手敲 S2 动态生成 | `ssh -i ~/.ssh/google_compute_engine lukecheng@$MON_IP`（**别用 `gcloud compute ssh`，走 Clash 会卡死**） | 不监控自己为主；是采集与看板平面 | **练完即删，不过夜** |
+
+> **2026-11-10 实测补充**：`practice-web` 是 e2-micro，**总内存 969MB、可用仅 210MB**，
+> 跑不动 Prometheus + Grafana（练习 7 里 Ops Agent 被慢 `dd` 拖垮的根因之一）。
+> 所以练习 8 另开 `lab08-mon`（e2-small）承载监控栈，两台被管机只装只读 `node_exporter`。
+> `jump-us` 为 Rocky Linux 9.4 / 1963MB 内存 / Docker 29.9.2 / `firewalld` inactive，
+> **9100 端口必须在腾讯云轻量控制台加白名单**（来源 = `lab08-mon` 公网 IP/32），命令行改无效。
+> 手敲材料：[08-hybrid-prometheus-grafana/README.md](08-hybrid-prometheus-grafana/README.md)。
 
 ---
 
@@ -121,8 +129,10 @@ key 放 `/etc/google/auth/application_default_credentials.json`（`0400 root:roo
 
 ## 纳管原则
 
-- **命名隔离**：练习临时资源 `lab07-*`，生产常驻资源 `prod-*`。清理脚本按前缀过滤，绝不误删。
+- **命名隔离**：练习临时资源 `lab07-*` / `lab08-*`，生产常驻资源 `prod-*`。清理脚本按前缀过滤，绝不误删。
 - **破坏只打靶机**：所有「故意搞坏」的动作限定在 `practice-web`；生产机只观测、不扰动。
+- **练习 8 的跨云边界**：生产机只多一个 `--net=host` 的只读 `node_exporter` 容器（`/:/host:ro,rslave`），不碰 n8n 三容器、不改 Caddy、不装任何常驻服务；9100 只对监控机 IP 放行，练完删容器 + 删控制台规则。
+- **监控平面隔离**：采集/看板不要和业务跑同一台 1GB 小机器 —— 业务一忙监控先瞎，就成了告警盲区（练习 7 实测过）。
 - **凭证不落盘、不入库**：台账只记别名和密钥**路径**，不记密钥内容、密码、Token。跨云主机的 GCP 凭证单独走最小权限服务账号，一台机器一把 key。
 - **跨云分工**：非 GCE 主机不要指望云厂商 Agent 的内置指标（绑定自家资源类型）；日志可以用 Agent，系统指标改走自定义指标 + `generic_node`，外部拨测兜底可用性。
 - **先只读探测再登记**：每台新机器接入时先跑一遍 `ssh` 只读巡检（OS / 容器 / 磁盘 / 监听端口 / 健康端点），把实测值写进表，别抄配置文档。

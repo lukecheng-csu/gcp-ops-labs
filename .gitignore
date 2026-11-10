@@ -7,3 +7,8 @@ upwork_case4_ssh_rescue.md
 
 __pycache__/
 *.pyc
+
+# 练习 8：渲染产物含真实 IP / SMTP 授权码，模板入库、产物不入库
+08-hybrid-prometheus-grafana/prometheus/prometheus.yml
+08-hybrid-prometheus-grafana/alertmanager/alertmanager.yml
+08-hybrid-prometheus-grafana/.env

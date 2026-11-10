@@ -11,11 +11,12 @@ Hands-on labs on Google Cloud — each one is something I actually broke, debugg
 | 05 | [Terraform Advanced](05-terraform-advanced/) | GCS remote state + locking, modules, dev/prod workspaces |
 | 06 | [Cloud SQL PITR](06-cloudsql-pitr/) | Automated backups + WAL, measured RPO/RTO, pgAudit forensics → point-in-time clone |
 | 07 | [Monitoring, Alerting & Logging](07-monitoring-alerting/) | Ops Agent, dashboard, email notification channel, uptime check, real triggered alerts |
+| 08 | [Hybrid Cloud Monitoring with Prometheus & Grafana](08-hybrid-prometheus-grafana/) | node_exporter across GCP + Tencent Cloud, Blackbox Exporter for web apps, Grafana dashboard as code, PromQL alert rules, 3 break-fix drills |
 
 ## Managed Hosts
 
-Every machine I can reach and monitor is registered in **[MANAGED_HOSTS.md](MANAGED_HOSTS.md)** — the GCP lab VM, plus the production n8n host on Tencent Cloud (`jump-us`). Lab 07 documents the hybrid design: syslog via Ops Agent, host metrics as custom metrics on `generic_node` (see [07-monitoring-alerting/hybrid](07-monitoring-alerting/hybrid/)), and an external uptime check, all landing in the same Cloud Monitoring project. **Current state: clean slate** — the verification run was torn down on 2026-11-09, and the [runbook](07-monitoring-alerting/README.md) is written to be re-run by hand from zero. The production box never takes part in break-fix drills.
+Every machine I can reach and monitor is registered in **[MANAGED_HOSTS.md](MANAGED_HOSTS.md)** — the GCP lab VM, plus the production n8n host on Tencent Cloud (`jump-us`). Lab 07 documents the hybrid design: syslog via Ops Agent, host metrics as custom metrics on `generic_node` (see [07-monitoring-alerting/hybrid](07-monitoring-alerting/hybrid/)), and an external uptime check, all landing in the same Cloud Monitoring project. **Current state: clean slate** — the verification run was torn down on 2026-11-09, and the [runbook](07-monitoring-alerting/README.md) is written to be re-run by hand from zero. The production box never takes part in break-fix drills. Lab 08 covers the same two hosts plus the web apps again with a self-hosted Prometheus + Grafana stack, on a temporary collector VM that is deleted at teardown.
 
 ## Roadmap
 
-Labs 08–13 (Cloud Run, CI/CD, IAM, cross-region HA, GKE, VMware migration): see **[ROADMAP.md](ROADMAP.md)**. Rule of thumb for every lab: build it first, then break it on purpose — teardown after each drill.
+Labs 09–14 (Cloud Run, CI/CD, IAM, cross-region HA, GKE, VMware migration): see **[ROADMAP.md](ROADMAP.md)**. Lab 08 was re-assigned on 2026-11-10 to hybrid-cloud monitoring (Prometheus + Grafana), which is the stack overseas clients actually ask for; the original 08–13 plan shifted to 09–14. Rule of thumb for every lab: build it first, then break it on purpose — teardown after each drill.

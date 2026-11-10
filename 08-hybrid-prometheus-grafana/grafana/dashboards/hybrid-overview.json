@@ -1,0 +1,114 @@
+{
+  "uid": "lab08-hybrid",
+  "title": "Lab 08 · Hybrid hosts + Web apps",
+  "description": "One pane of glass: GCE VM, Tencent Cloud production host, and external probes for the static site and n8n.",
+  "tags": ["lab08", "hybrid", "prometheus", "grafana"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "在线主机 / 共 2 台",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(up{job=~\"node-.*\"})", "legendFormat": "" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 2, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 2 }] } }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Web 检查通过 / 共 5 项",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(probe_success{job=~\"blackbox-.*\"})", "legendFormat": "" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 5, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 5 }] } }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "正在响的告警",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "mappings": [], "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CPU 使用率 · 跨云两台主机",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "100 - (avg by (host, cloud) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)", "legendFormat": "{{host}} ({{cloud}})" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "内存使用率 · 跨云两台主机",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100", "legendFormat": "{{host}} ({{cloud}})" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "根盘使用率 · 跨云两台主机",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "100 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} * 100)", "legendFormat": "{{host}} ({{cloud}})" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never", "spanNulls": true }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] } }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Web 应用可用性 · 外部拨测",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_success{job=~\"blackbox-.*\"}", "legendFormat": "{{app}} / {{check}}" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "mean"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Web 应用响应时间（秒）",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_duration_seconds{job=~\"blackbox-.*\"}", "legendFormat": "{{app}} / {{check}}" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Web 应用 HTTP 状态码",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "probe_http_status_code{job=~\"blackbox-.*\"}", "legendFormat": "{{app}} / {{check}}" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "哪条告警在响",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "ALERTS{alertstate=\"firing\"}", "legendFormat": "{{alertname}} · {{host}}{{app}}" }],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] }
+    }
+  ]
+}
