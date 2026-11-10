@@ -83,13 +83,13 @@
                   "aggregation": {
                     "alignmentPeriod": "60s",
                     "perSeriesAligner": "ALIGN_NEXT_OLDER",
-                    "crossSeriesReducer": "REDUCE_MEAN"
+                    "crossSeriesReducer": "REDUCE_FRACTION_TRUE"
                   }
                 }
               },
               "plotType": "LINE",
               "targetAxis": "Y1",
-              "legendTemplate": "拨测通过（0/1）"
+              "legendTemplate": "拨测通过比例（0~1）"
             }
           ],
           "yAxis": { "label": "count / passed", "scale": "LINEAR" },

@@ -57,7 +57,7 @@
         }
       },
       {
-        "title": "Uptime 检查结果（1=通过，0=失败）",
+        "title": "Uptime 通过比例（1=全部通过，0=全部失败）",
         "xyChart": {
           "dataSets": [
             {
@@ -67,7 +67,7 @@
                   "aggregation": {
                     "alignmentPeriod": "60s",
                     "perSeriesAligner": "ALIGN_NEXT_OLDER",
-                    "crossSeriesReducer": "REDUCE_MEAN"
+                    "crossSeriesReducer": "REDUCE_FRACTION_TRUE"
                   }
                 }
               },
@@ -76,6 +76,29 @@
             }
           ],
           "yAxis": { "label": "passed", "scale": "LINEAR" },
+          "chartOptions": { "mode": "COLOR" }
+        }
+      },
+      {
+        "title": "内容不匹配比例（1=返回200但内容对不上；与通过比例一起看可分辨故障类型）",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/content_mismatch\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_NEXT_OLDER",
+                    "crossSeriesReducer": "REDUCE_FRACTION_TRUE"
+                  }
+                }
+              },
+              "plotType": "LINE",
+              "targetAxis": "Y1"
+            }
+          ],
+          "yAxis": { "label": "mismatch", "scale": "LINEAR" },
           "chartOptions": { "mode": "COLOR" }
         }
       }

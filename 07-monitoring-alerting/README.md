@@ -53,7 +53,7 @@ echo "HOST_IP=$HOST_IP EMAIL=$EMAIL"
 | A6  | 第 3 步 两条告警                                    | `policies list` 两条 `enabled=True`             |
 | A7  | 第 4.1 步 `dd` 灌 9G → 等 **2~4 分钟**              | 收到告警邮件 + `alerts list` 有 OPEN                 |
 | A8  | 第 4.1 步 删填充文件                                 | 收到自动恢复通知                                      |
-| A9  | 第 4.2 步 `OK`→`BROKEN`→`OK`                    | 再收一对触发/恢复邮件，曲线掉 0 再回 1                        |
+| A9  | 第 4.2 步 `OK`→`DOWN`→`OK`                      | 再收一对触发/恢复邮件，曲线掉 0 再回 1                        |
 | A10 | 第 5 步 三轮破坏-修复                                 | 曲线 / 事件 / 日志三处能对上                             |
 | A11 | 「收尾：一键清理」                                     | `lab07-*` 清空（B 线资源此时还没建）                      |
 
@@ -84,7 +84,7 @@ flowchart TB
         DD["/tmp/lab07-fill<br/>dd 灌盘的破坏点"]
     end
     subgraph GCS["GCS: lukecheng-static-site"]
-        H["health.txt（内容 OK）<br/>破坏：改成 BROKEN"]
+        H["health.txt（内容 OK）<br/>破坏：改成 DOWN（别写 BROKEN）"]
     end
     UP["Uptime check<br/>每 1 分钟、全球 3+ 地区<br/>HTTPS 200 + 内容含 OK"]
     MON["Cloud Monitoring<br/>指标 / dashboard / 告警策略"]
@@ -212,12 +212,18 @@ G monitoring dashboards create --config-from-file=dashboard.json
 G monitoring dashboards list --format='table(name,displayName)'
 ```
 
-四块面板：
+五块面板：
 
 1. **练习 6 事故复盘（文字面板）**：37m26s 的 RTO 分项表 —— 等 WAL 窗口 4m24s / 人工决策 4m34s / clone 26m59s / 验证 1m28s。这块就是本练习的「为什么要有监控」：练习 6 里「发现 + 决策」全靠人，练习 7 把它变成自动告警。
 2. CPU 利用率：`compute.googleapis.com/instance/cpu/utilization`，**hypervisor 直接给，不装 Agent 也有**。
 3. 根盘使用率：`agent.googleapis.com/disk/percent_used`（Ops Agent，单位 **0~100 的百分比**，不是 0~1）。
-4. Uptime 检查结果：`monitoring.googleapis.com/uptime_check/check_passed`，1=通过 / 0=失败。
+4. Uptime 通过比例：`monitoring.googleapis.com/uptime_check/check_passed`，1=全部地区通过 / 0=全部失败（中途部分地区失败会落在 0~1 之间）。
+   > 这是 **BOOL 类型**指标，`REDUCE_MEAN` 不能用在 BOOL 上（API 直接 400 `The reducer cannot be applied to metrics with value type BOOL`），面板会一直空白。
+   > 必须用 `REDUCE_FRACTION_TRUE`（通过地区占比）或 `REDUCE_COUNT_FALSE`（失败地区数）；告警策略用的就是后者。
+5. 内容不匹配比例：`monitoring.googleapis.com/uptime_check/content_mismatch`，1=返回 200 但内容对不上。
+   > **第 4 块和第 5 块对照着看，两秒定性故障类型**：
+   > 状态码 200 + 不匹配比例=1 → **内容坏了**；状态码 403/404 + 不匹配比例=0 → **服务/权限/路径这层就断了**。
+   > 实测那次 `DOWN` 破坏：状态码全程 200、内容不匹配 214 个点 → 属于前者。
 
 > `--validate-only` 会打印 `Created [xxxx]`，**但并不会真的保存**（本机实测：跑完 `dashboards list` 仍为空）。  
 > 别被这行输出骗了，真正创建要跑第二条命令。
@@ -240,6 +246,7 @@ G monitoring uptime list-configs --format='table(name,displayName)'
 
 > `--period=1` 是最小值（1 分钟），为了快点看到破坏效果。`--matcher-content=OK`  
 > 让「返回 200 但内容被改坏」也算失败——这是内容级健康检查，比只看状态码更接近真实业务。  
+> **破坏串必须保证不含 `OK`（别用 `BROKEN`）**，否则 `CONTAINS_STRING` 照样匹配通过。  
 > 地区默认全部（≥3 个），不用自己列。
 
 ## 第 3 步 · 两条告警策略（约 3 分钟）
@@ -364,30 +371,323 @@ SSH 'sudo systemctl restart google-cloud-ops-agent; sudo systemctl restart googl
 ### 4.2 Uptime 告警
 
 ```bash
-printf 'BROKEN\n' > /tmp/lab07-health.txt
+printf 'DOWN\n' > /tmp/lab07-health.txt
 gcloud storage cp /tmp/lab07-health.txt gs://lukecheng-static-site/health.txt \
   --cache-control='no-store'
-# 等 2~4 分钟，看 dashboard 的 check_passed 掉到 0，收告警邮件
+curl -sS --noproxy '*' -m 10 https://storage.googleapis.com/lukecheng-static-site/health.txt
+# 应输出 DOWN —— 破坏串里绝不能含 OK
+# 等 2~4 分钟，看 dashboard 的通过比例掉到 0，收告警邮件
 
 printf 'OK\n' > /tmp/lab07-health.txt
 gcloud storage cp /tmp/lab07-health.txt gs://lukecheng-static-site/health.txt \
   --cache-control='no-store'
-# 等 2~4 分钟，check_passed 回 1，收恢复通知
+# 等 2~4 分钟，通过比例回 1，收恢复通知
 ```
 
-> 内容不匹配（`BROKEN` 不含 `OK`）= 拨测失败，这是**故意的软故障**：不改权限、不删对象、不停服务，  
-> 秒级可回滚。收件箱里除了告警邮件，还要留一张 dashboard 截图当作品集证据。
+> **别用 `BROKEN` 当破坏串**：`BR`**`OK`**`EN` 的第 3、4 个字母正好是 `OK`，  
+> `--matcher-content=OK --matcher-type=contains-string` 会判定「内容仍含 OK」→ 拨测永远通过、告警永不触发  
+> （2026-11-10 实测：6 个地区、6 小时 12,887 个点全是 True，一封信都没有）。改用 `DOWN` / `FAIL` 这类不含 `OK` 的串。  
+> 内容不匹配 = 拨测失败，这是**故意的软故障**：不改权限、不删对象、不停服务，秒级可回滚。  
+> 收件箱里除了告警邮件，还要留一张 dashboard 截图当作品集证据；163 邮箱记得翻垃圾箱，发件方 `alerting-noreply@google.com`。  
+> 另：`CONTAINS_STRING` 实测**不区分大小写**（内容 `OK` 配 matcher `ok` 也能过，2026-11-10 实测）。
+
+### 4.3 403 / 404 能被拨测发现吗？能，而且分得清故障类型
+
+拨测的判定顺序是：**先看状态码，再看内容**。
+
+- 状态码：默认只接受 **200–299**（官方 `httpCheck.acceptedResponseStatusCodes` 留空时的语义）。  
+  403、404、5xx 全部算失败 → `check_passed` 掉 0 → 告警照发。
+- 内容：状态码合格后再看 `contentMatchers`（本练习是「含 `OK`」），不匹配也算失败。
+
+2026-11-10 实测（对象被删、桶只留 `allUsers:objectViewer`）：
+
+| 场景                    | HTTP 实际返回                              | 拨测判定 |
+| ----------------------- | ------------------------------------------ | -------- |
+| 对象存在、内容 OK       | `200` + `OK`                               | 通过     |
+| 对象存在、内容被改坏    | `200` + `BROKEN`（含 OK）                  | **仍通过**（这就是 4.2 那个坑） |
+| 对象存在、内容 DOWN     | `200` + `DOWN`                             | 失败（内容不匹配） |
+| 对象不存在              | `404 NoSuchKey`                            | 失败（状态码） |
+| 桶被设私有（未认证访问） | `403`                                       | 失败（状态码） |
+
+**怎么一眼看出是哪一类故障**——拨测家族有 6 个指标，实践里看这 3 个就够：
+
+| 指标                                          | 含义                     | 403/404 故障 | 内容坏 |
+| --------------------------------------------- | ------------------------ | ------------ | ------ |
+| `uptime_check/http_status`                    | 拨测看到的 HTTP 状态码   | `403`/`404`  | `200`  |
+| `uptime_check/check_passed`                   | 通过=1 / 失败=0          | `0`          | `0`    |
+| `uptime_check/content_mismatch`               | 内容对不上=1             | `0`          | `1`    |
+| `uptime_check/error_code`                     | 拨测侧错误码（超时等）   | 空           | 空     |
+
+> 「状态码 200 + content_mismatch=1」= 服务活着但内容坏了；  
+> 「状态码 403/404 + content_mismatch=0」= 服务/权限/路径这一层就断了。  
+> dashboard 第 5 块已加「内容不匹配比例」曲线，和第 4 块「通过比例」对照着看，两秒定位故障类型。
+
+### 4.4 真正的盲区：没有数据 ≠ 一切正常（最容易被忽略的一类故障）
+
+上面两类故障（403/404、内容坏）都还有数据点，告警引擎看得见。  
+但如果**采集链路本身断了**——Agent 挂了、采集进程卡死、拨测配置被删——情况是：
+
+> 指标序列**直接消失**，一个数据点都没有。  
+> 阈值告警只在「有数据点可比」时评估，**没有数据 = 没有可比的东西 = 条件不会被评估 = 告警不响**。
+
+2026-11-09 实测踩过：dd 慢灌把采集进程拖死，磁盘/CPU/内存三类指标同时断供，阈值降到多低都不触发。
+
+官方文档给了三个开关，默认全都站在「不报警」那边：
+
+| 手段                                          | 默认行为                                              | 用在哪 |
+| --------------------------------------------- | ----------------------------------------------------- | ------ |
+| `conditionThreshold.evaluationMissingData`     | `UNSPECIFIED`：数据停时，**不开新事件**，已开事件保持开 | 阈值策略 |
+| `conditionAbsent`（缺数据条件）                | 独立条件类型：**duration 内一个点都没有 → 告警**      | **正解** |
+| MQL `absent_for`                               | 同上，但控制台已弃用 MQL，只能走 API                  | 备选   |
+
+本练习已配好第三条（`alert-absent.json`，云上策略名 `lab07-metrics-absent`）：
+
+```bash
+G monitoring policies create --policy-from-file=alert-absent.json \
+  --notification-channels="$CHANNEL_ID"
+```
+
+两条缺数据条件：**VM 磁盘指标 5 分钟无数据**、**拨测结果 10 分钟无数据**（后者防「拨测被停用/配置丢了」）。
+
+> `conditionAbsent` 有个前提：**策略创建后，被监控对象至少要写过一次数据**，条件才会开始判。  
+> 所以新建这条策略后，先确认磁盘指标还在写（dashboard 第 3 块有曲线），否则它会一直沉默。  
+> `duration` 最小 120 秒，且必须是整分钟。
+
+**怎么验它真的会响**（跟 4.2 一样自己敲）：
+
+```bash
+# 停采集（三个 unit 一起点名最稳；本机实测只停父 unit 也会连带停子 unit，
+#        因为子 unit 里有 PartOf=google-cloud-ops-agent.service，但别赌这个）
+SSH 'sudo systemctl stop google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit'
+
+# 验证真的停了：期望三个都 inactive，pgrep 无输出
+SSH 'systemctl is-active google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit; pgrep -af otelopscol'
+
+# 等 10~12 分钟（duration 300s + 采样 60s + 评估周期 + 邮件投递），收「磁盘指标 5 分钟无数据」告警
+
+SSH 'sudo systemctl start google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit'
+# 恢复后 1~2 分钟指标回流，自动收 RESOLVED
+```
+
+> 顺带这就是第 5 步破坏表第 1 行的升级版：  
+> 只看曲线断档是**人眼发现**；加上这条策略，是**机器告诉你**。这才是监控的完整形态。  
+> 详细时延与"怎么证明自己真的停了"见 4.4 末尾的实测记录。
+
+**2026-11-10 实战验证（真跑通了）**：这条策略建好后 4 分钟就抓到一个真事件 ——  
+VM 上 `google-cloud-ops-agent` 被停掉，磁盘指标自 `03:15:56Z` 起彻底断供，  
+`conditionAbsent` 在 `03:27:45Z` 判定「5 分钟无数据」并 OPEN，**同一时刻阈值策略 `lab07-disk-used-high` 完全静默**（没数据可比，谈不上超阈值）。  
+恢复 Agent 后 1 分钟内指标回流、事件自动 CLOSED。这正是「机器比人眼早发现」的完整闭环。
+
+> **踩到的坑：filter 别写太宽**。第一条版本写的是 `resource.type="uptime_url"`（不限定 host），  
+> 结果把**已删掉的 prod 拨测**（`host=cloudworkflowdone.com`，11-09 13:05 后就没数据了）也算成「10 分钟无数据」，误报一串。  
+> 修法：filter 里加 `resource.labels.host="storage.googleapis.com"` 精确锁定本练习的拨测。  
+> **规律**：`conditionAbsent` 判的是「这条 filter 匹配到的序列在 duration 内有没有新点」，  
+> 历史遗留、早已不写的序列照样算「没数据」。所以 filter 要精确到具体资源，别只写 resource.type。
+
+**📉 断档在图上长什么样：是「空白」，不是「掉到 0」（2026-11-10 13:14 实测）**
+
+这一条最容易看错，值得单独说。停掉采集后：
+
+- **磁盘面板**（`agent.googleapis.com/disk/percent_used`）：线**从某一点直接断掉，后面一片空白**。
+- **CPU 面板**（`compute.googleapis.com/instance/cpu/utilization`）：**照旧连续**，因为 CPU 数由 hypervisor 直接给，不经过 Agent。
+
+本机 05:14:11Z 停机后的逐分钟实测（`ALIGN_COUNT` + `REDUCE_SUM` 数点法）：
+
+```
+05:09  点数=9      05:14  点数=9   ← 停机
+05:10  点数=9      05:27  点数=9   ← 恢复（中间 05:15~05:26 完全没有窗口返回）
+05:11  点数=9      05:28  点数=9
+05:12  点数=9      05:29  点数=9
+05:13  点数=9      05:30  点数=9
+```
+
+**关键结论：断档期间 API 连一个"点数=0"的窗口都不返回** —— 空窗口被整个省略，
+所以图表上不可能画成"掉到 0 的线"，只能是空白。（`ALIGN_NEXT_OLDER` / `ALIGN_MIN` / `ALIGN_MAX` 三种对齐器都试过，
+行为一致：断档就是断档。）
+
+> **为什么这很重要**：**空白 ≠ 0，0 ≠ 正常**。  
+> - 「掉到 0」= 明确的值，说明服务活着但返回了坏结果 → 阈值告警能抓住。  
+> - 「空白」= 根本没有值 → 阈值告警**抓不住**，只有 `conditionAbsent` 能抓。  
+> 
+> 所以「曲线断了」这件事**只能靠告警发现，不能靠看图发现** —— 人眼扫一眼面板很容易把断档当成"图还没加载"。
+> 这就是 `conditionAbsent` 存在的意义。
+
+**⚠️ 查告警别用 `incidents` 接口，用 `alerts list`**（2026-11-10 实测踩到）
+
+本项目里 `GET /v3/projects/{project}/incidents` **返回空数组**，即使刚刚明明有事件 OPEN 过。
+用 `gcloud monitoring alerts list` 才看得到完整历史（带 openTime / closeTime）：
+
+```bash
+# ✅ 可靠：能看到全部历史事件 + 起止时间
+gcloud monitoring alerts list --project=lukechengtest --limit=10 \
+  --format='table(openTime,closeTime,state)'
+
+# ❌ 本项目不可靠：即使有事件也返回空
+curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  'https://monitoring.googleapis.com/v3/projects/lukechengtest/incidents'
+```
+
+本机实测：`05:14:11Z` 停机 → `05:25:44Z` 事件 OPEN（**MTTD 11 分 33 秒**，与上一轮实测的 ~11 分钟吻合）
+→ `05:29:39Z` CLOSED（Agent 恢复、指标回流）。
+**用 `incidents` 接口查会以为"根本没告警"，从而误判成"策略没生效"。**
+
+> **判断"这次到底有没有响"的正确姿势**：
+> 1. `gcloud monitoring alerts list --filter='state=OPEN'` 看当前有没有开着的；
+> 2. 没有 OPEN 就看历史（不带 filter），确认 openTime 是不是刚才；
+> 3. 别用 `incidents`。
+
+**🧩 实战一幕：两封邮件同时到，怎么分辨哪封是真的（2026-11-10 真实场景）**
+
+停 Agent 之后，邮箱里**同时**收到两封 `lab07-metrics-absent` 的告警：
+
+| # | 邮件标题                                | 真相               | 怎么一眼分辨                                    |
+| - | ----------------------------------- | ---------------- | ------------------------------------------ |
+| 1 | `Disk metric ... absent for more than 5 mins` | ✅ **真告警**      | 指标就是断了，且磁盘指标**同时**停了 → 真断供                |
+| 2 | `Uptime Check URL ... absent for more than 10 mins`（host=`cloudworkflowdone.com`） | ❌ **误报**（历史遗留序列） | 邮件里带的 `host` 是**已删除的 prod 拨测**；去查那条序列的最后写入时间 |
+
+**分辨的三个动作**（照做就不会被误报带偏）：
+
+1. **先看邮件正文里的资源标签**：`host=cloudworkflowdone.com` 不是本练习的拨测（本练习是 `storage.googleapis.com`）→ 范围外。
+2. **再查那条序列最后写入时间**：
+   ```bash
+   curl -sS -G -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     --data-urlencode 'filter=metric.type="monitoring.googleapis.com/uptime_check/check_passed"' \
+     --data-urlencode 'interval.startTime=2026-11-08T00:00:00Z' \
+     --data-urlencode 'interval.endTime=2026-11-10T03:40:00Z' \
+     'https://monitoring.googleapis.com/v3/projects/lukechengtest/timeSeries' \
+     | python3 -c "
+   import json,sys,collections
+   d=json.load(sys.stdin); per=collections.defaultdict(list)
+   for s in d.get('timeSeries',[]):
+       for p in s.get('points',[]): per[s['resource']['labels'].get('host')].append(p['interval']['startTime'])
+   for h,v in per.items():
+       v=sorted(v); print(f'  host={h}: 点数={len(v)} 最后写入={v[-1] if v else None}')
+   "
+   ```
+   本机实测输出：`host=cloudworkflowdone.com: 点数=395 最后写入=2026-11-09T13:05:10Z` ——
+   **最后写入早于策略创建时间**，说明它早就没人写数据了，不是"现在坏了"，是"一直坏着"。
+3. **对时间**：两封邮件如果内容互不相关、触发时间不同，**大概率是两件独立的事**，
+   别把它们混成一个"系统全面崩了"。真故障的判据是：**多个本应同时动的指标一起断了**。
+
+> **这才是"监控自己的盲区"最难缠的地方**：误报和真告警**混在同一时间窗、同一个策略**里到达，
+> 收件箱看起来像"大面积告警"，实际只有一封有效。  
+> 所以**每条告警都要落到"哪个资源、哪个时间点、是不是现在"三个问题上**，不能只看标题。
+
+**⚠️ 2026-11-10 第二次实测：停完必须自己验证，别假设它停了**
+
+这一条比上面所有坑都关键。
+
+`google-cloud-ops-agent.service` 是 `Type=oneshot` + `RemainAfterExit=yes` —— 它自己**不常驻、不采集**，
+只是启动时校验一下配置（`ExecStart=/bin/true`）。真正干活的采集进程是两个**子 unit**：
+
+| unit                                              | 干什么                             | 停了会怎样        |
+| ------------------------------------------------- | ------------------------------ | ------------ |
+| `google-cloud-ops-agent`                                | 父 unit，只做配置校验（oneshot）           | 自己变 inactive  |
+| `google-cloud-ops-agent-opentelemetry-collector`        | **采集指标**（磁盘/CPU/内存都靠它）   | **指标断供**    |
+| `google-cloud-ops-agent-fluent-bit`                     | 采集日志                            | 日志断供        |
+
+**关键机制（本机 `systemctl cat` 实测）**：父 unit 写的是 `Wants=`，但两个子 unit 自己写了
+`PartOf=google-cloud-ops-agent.service` —— `PartOf=` 的语义是「**父 unit 停/重启时，我也跟着停/重启**」。
+所以 `systemctl stop google-cloud-ops-agent` **确实会连带停掉两个子 unit**（本机 03:39:16 实测：三个全 inactive、otel 进程消失、指标 03:39 断供）。
+
+> ⚠️ **别把 `Wants=` 当成「停父不停子」**：方向搞反就会写出错误的 runbook。
+> `Wants=` 是「**父启动时拉起子**」，`PartOf=`（子 unit 里写的）是「**父停时子跟着停**」。
+> 到底哪个生效，以 `systemctl cat` 查出来的实际依赖为准，不要凭直觉。
+
+**所以真正要防的不是「停不掉」，而是「以为停了其实没停 / 停了不确定」**。三种翻车姿势：
+
+1. **只停了父 unit 就走人** —— 本机能连带停，但**换台机器、换个 agent 版本、或父 unit 挂了而子 unit 还活着**，就只停了一半。
+2. **停完不验证** —— 以为停了，实际某个子 unit 还活着、指标照常上报，等 10 分钟发现没告警，以为是告警坏了。
+3. **恢复时也只 start 父 unit** —— 万一子 unit 没跟着起来，指标就永远回不来。
+
+**✅ 可靠写法（停 + 验 + 恢复，三步都要做）**：
+
+```bash
+# 1) 停采集：三个 unit 一起点名（不依赖连带行为，最稳）
+SSH 'sudo systemctl stop google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit'
+
+# 2) 验证真的停了：三个都 inactive + otel 进程消失
+SSH 'systemctl is-active google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit; pgrep -af otelopscol'
+# 期望输出：inactive / inactive / inactive，且 pgrep 无输出
+
+# 3) 恢复（同样三个一起点名）
+SSH 'sudo systemctl start google-cloud-ops-agent \
+        google-cloud-ops-agent-opentelemetry-collector \
+        google-cloud-ops-agent-fluent-bit'
+```
+
+> **更硬的验证方式（查系统日志，不靠猜）**：
+> ```bash
+> SSH 'sudo journalctl -u google-cloud-ops-agent-opentelemetry-collector --since "10 min ago" --no-pager | grep -E "Stopping|Stopped"'
+> ```
+> 有 `Stopping google-cloud-ops-agent-opentelemetry-collector.service` 才叫真停了。
+>
+> 或者用 **sudo 审计日志倒查**（最铁证，谁在什么时候敲了什么一目了然）：
+> ```bash
+> SSH 'sudo grep "COMMAND=.*systemctl" /var/log/auth.log | tail -10'
+> ```
+> 输出形如 `sudo: lukecheng : ... COMMAND=/usr/bin/systemctl stop google-cloud-ops-agent`。
+> **本机 2026-11-10 实测**：用户那次 stop 的审计记录**确实存在**，但 stop 的时间点是 `03:16:19`，
+> 而告警在 `03:27:45` 才开 —— 中间 11 分钟正是「Agent 停了但告警引擎还没到评估点」，
+> 加上 GCS 拨测那条**误报**邮件一起到，看起来像「两件事同时发生」，其实是**两封邮件、两个不同原因**。
+> 这就是必须逐封拆开看的原因。
+
+**⏱️ 断供到告警的实际时延（2026-11-10 实测，可直接写进作品集）**：
+
+| 时刻 (UTC)  | 发生了什么                                             | MTTD |
+| ----------- | -------------------------------------------------- | ---- |
+| `03:39:17Z` | 采集进程停（三个 unit 全 inactive、otel 进程消失）                 | —    |
+| `03:39:xxZ` | 磁盘指标最后一个数据点，之后彻底没有新点                             | —    |
+| `03:44:xxZ` | 5 分钟窗口内一个点都没有 → `conditionAbsent` 条件成立                  | —    |
+| `03:50:00Z` | 事件判 **OPEN**，告警邮件发出                                       | **约 11 分钟** |
+| `04:01:40Z` | 恢复 Agent、指标回流 → 事件自动 **CLOSED**（收到恢复信）                | —    |
+
+> 为什么是 11 分钟而不是 5 分钟：`duration=300s` 只是**条件成立**的时间，
+> 还要等告警引擎的评估周期（采样 60s + 策略评估 + 邮件投递），实际从停机到收信 **10~12 分钟**。
+> **演练时提前知道要等这么久**，别以为命令没生效就重复敲。
 
 ## 第 5 步 · 破坏-修复演练（自己敲、自己定位）
 
 | # | 破坏                                                        | 观察什么                                                                      | 修复                                            |
 | - | --------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------- |
-| 1 | `SSH 'sudo systemctl stop google-cloud-ops-agent'`        | **磁盘曲线断档，但 CPU 曲线还在** —— 因为 CPU 来自 hypervisor，磁盘来自 Agent。这是理解「指标来源」最直观的一刀 | `sudo systemctl start google-cloud-ops-agent` |
+| 1 | `SSH 'sudo systemctl stop google-cloud-ops-agent google-cloud-ops-agent-opentelemetry-collector google-cloud-ops-agent-fluent-bit'` | **磁盘曲线断档，但 CPU 曲线还在** —— 因为 CPU 来自 hypervisor，磁盘来自 Agent。这是理解「指标来源」最直观的一刀 | `sudo systemctl start` 同样三个 unit 一起 |
 | 2 | 把 `alert-disk.json` 阈值改成 `99`，或把 duration 改成 `600s` 再更新策略 | 灌到 84% 却不告警 → 体会阈值/持续时间对 MTTD 的影响                                         | 改回 75 / 60s                                   |
-| 3 | 拨测 `--matcher-content` 改成 `NEVER_MATCH`（或删掉 health.txt）   | 内容匹配失败 / 404 都会让 `check_passed` 掉 0，但**故障指纹不同**（后者在 Logging 里能看到 404）     | 改回 `OK` / 重新上传                                |
+| 3 | 拨测 `--matcher-content` 改成不含 `OK` 的串（如 `NEVER_MATCH`），或把 `health.txt` 挪走模拟 404 | 两种都会让 `check_passed` 掉 0，但指纹不同：内容失败 = `http_status=200` + `content_mismatch=1`；对象缺失 = `http_status=404`。**看指标和 Uptime details 页，不是看 Cloud Logging**——拨测单次结果不进日志（见下方「破坏 3 实测记录」） | 改回 `OK` / 把对象挪回来 |
 
 > 按路线图约定：破坏环节只给骨架和排错方向，命令自己敲、现象自己认。  
-> 排错顺序固定：**先看 dashboard 曲线 → 再看 `monitoring alerts list` → 最后翻 Cloud Logging**。
+> 排错顺序固定：**先看 dashboard 曲线 → 再看 `monitoring alerts list` → 最后翻 Cloud Logging**。  
+> 例外：拨测类故障（破坏 3）单次探测结果不在 Cloud Logging，看 `uptime_check/*` 指标和 Uptime details 页。
+
+### 破坏 3 实测记录：拨测故障的两副面孔（2026-11-10）
+
+两轮完整闭环，每轮都是 fired → resolved 一对邮件：
+
+| 轮次 | 破坏 | 探测判定 | 事件窗口 |
+| ---- | ---- | -------- | -------- |
+| 1 | `health.txt` 内容改成 `DOWN`（不含 OK） | `check_passed` 掉 0（200 + 内容不匹配） | fired `08:03:03Z` → resolved `08:15Z`，**11 分 58 秒** |
+| 2 | `gcloud storage mv health.txt health.txt.bak`（对象缺失） | `check_passed` 掉 0（404） | fired `08:20:53Z` → resolved `11:11Z`，**2 小时 51 分** |
+
+MTTD 观察：破坏动作到 fired 邮件约 1~3 分钟（60s 探测周期 + 地区收敛 + 策略评估）。第 2 轮持续 2h51m 是因为中途留在事故状态查证据，不是恢复慢。
+
+**五条实测教训：**
+
+1. **拨测单次结果不进 Cloud Logging。** `resource.type="uptime_url"` 下只有告警事件（`monitoring.googleapis.com%2FViolationOpenEventv1` / `ViolationAutoResolveEventv1`），没有每次探测的记录；GCS 作为被测对象本身也没有服务端访问日志。判断「200 还是 404」只能看三处：`uptime_check/http_status`（拨测看到的响应码）、`uptime_check/content_mismatch`（内容是否对不上）、Uptime details 页按地区的实时状态。
+2. **`CONTAINS_STRING` 实测不区分大小写。** 对象内容 `OK`、matcher 配 `ok`，六地区照常通过、恢复邮件照发（官方 API 文档未写明大小写语义，此结论来自实测）。要严格匹配只能用 `MATCHES_REGEX` + `(?i)` 自行控制。
+3. **地区收敛有时差。** 恢复后各探针翻绿不同步（实测 us-virginia 比其他地区晚约 2 个周期）；故障期间状态面板也会一半红一半绿。**别急着判定"还没修好"，等 2~3 个周期。**
+4. **Uptime details 页是历史快照，会骗人。** 图表和状态面板都按所选时间窗渲染——选了一个过去的固定窗口，看到的就是过去的红。判断"现在"要用时间窗「Last 1 hour」、`alerts list` 或直接 `curl` 目标。
+5. **`Policies` 列显示 0 ≠ 告警失效。** 本策略是按 `check_passed` 指标条件创建的，没有走 uptime check 的「Create policy」关联入口，所以详情页显示 "There are no associated policies"、列表 Policies 列为 0——但告警照常 fired/resolved。两条链路（指标条件 / 对象关联）结果一致、管理视角不同。
+
+**一件小插曲，值得记住：** 修复过程中 matcher 在大小写之间来回改、对象被误删过一次，导致告警又 fired 一轮——**修复动作本身可能就是下一次事故**，改动生产配置后要立刻用 `alerts list --filter='state=OPEN'` 复核。
 
 ---
 
@@ -718,7 +1018,7 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 > `custom.googleapis.com/host/*` 的**指标定义**不用删（API 不支持手删）；没有数据写入就不计费，  
 > 下次手敲时新点会继续写进同名指标。删完再敲一遍，从速查章「开工三件事」开始即可。
 
-## 最容易翻车的 15 条
+## 最容易翻车的 25 条
 
 | #  | 坑                                           | 正确做法                                                                                        |
 | -- | ------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -737,11 +1037,21 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 | 13 | 新窗口直接敲 `SSH ...` 报 `hostname contains invalid characters` | `SSH()` / `HOST_IP` 是上个窗口临时定义的，新窗口要重敲「开工三件事」；应急可直接写全 `ssh -i ~/.ssh/google_compute_engine ... lukecheng@<IP>` |
 | 14 | 告警还 `OPEN` 时「再破坏一次」想重收邮件             | **持续 OPEN 不会重复发信**，通知只在状态变化（OPEN / CLOSED）时发。先删填充文件让事件关闭（收恢复信），再破坏才有新的触发信；想立刻测通道就走 4.2 的 uptime（另一条策略、全新事件） |
 | 15 | `dd` 慢灌到 87% 却「死活不报警」                  | **监控自己先被拖垮了**：磁盘/CPU/内存指标同时断供，告警引擎没数据自然不触发。见下方「指标断供」排查；**别用 dd 慢灌，直接 `fallocate -l 7.5G` 秒级** |
+| 16 | 破坏串写成 `BROKEN`，拨测「死活不失败、不告警」        | `BR`**`OK`**`EN` 含 `OK`，`CONTAINS_STRING` 一直匹配成功 → 6 个地区全 True，告警引擎根本没开。用 `DOWN` / `FAIL`，上传后 `curl` 确认内容 |
+| 17 | dashboard 第 4 块面板「Uptime」永远空白           | `check_passed` 是 **BOOL** 指标，`REDUCE_MEAN` 用在 BOOL 上 API 直接 400，面板拿不到任何点。改 `REDUCE_FRACTION_TRUE`（通过占比）或 `REDUCE_COUNT_FALSE`（失败地区数） |
+| 18 | 以为「服务挂了」只有一种形态                        | 分三层：**状态码错**（403/404/5xx，默认只认 200–299，拨测必失败）、**内容错**（200 但内容对不上，靠 `content_mismatch` 指标分辨）、**没数据**（采集断了，序列消失，阈值告警根本不评估）。只有第三层需要 `conditionAbsent` 单独配策略 |
+| 19 | 以为「没数据」时阈值告警会响                        | 默认 `evaluationMissingData=UNSPECIFIED`：**不开新事件**，已开事件保持开。断供要靠 `conditionAbsent`（本练习 `alert-absent.json`）；另外 `conditionAbsent` 要求策略建好后被监控对象至少写过一次数据，否则它一直沉默 |
+| 20 | `conditionAbsent` 的 filter 只写 `resource.type`      | 它判的是「filter 匹配到的序列在 duration 内有没有新点」，**早已不写的历史序列照样算没数据** → 误报。filter 必须精确到具体资源（如加 `resource.labels.host="storage.googleapis.com"`） |
+| 21 | 停完 Agent 以为「肯定停了」，等半天没告警              | 父 unit 是 `Type=oneshot`（自己不采集），真正采集的是两个子 unit。本机子 unit 有 `PartOf=google-cloud-ops-agent.service` → 停父 unit 会连带停子；但**别赌这个**：三个 unit 一起点名 + `systemctl is-active` 验证 + `pgrep otelopscol` 确认 |
+| 22 | 停机到收信只有 5 分钟，实际等了 11 分钟                   | `duration=300s` 只是**条件成立**的时间，还要叠加采样 60s + 策略评估周期 + 邮件投递。实测 MTTD **10~12 分钟**，演练前先知道要等这么久，别以为命令没生效就重复敲 |
+| 23 | 两封告警邮件同时到，以为是大面积故障                      | 先看邮件正文里的资源标签 + 查序列最后写入时间。本机实测：`cloudworkflowdone.com` 那封是历史遗留序列的**误报**（11-09 13:05 后就没数据），同期的磁盘断供那封才是**真告警**。真故障的判据是「多个本应同时动的指标一起断了」 |
+| 24 | 看到曲线断了，以为「掉到 0 了」，阈值告警会响                | **断档 = 空白，不是 0**。实测断档期间 API 连"点数=0"的窗口都不返回（空窗口被省略），图表上只能是空白。空白没有值可比，阈值告警**永远不评估** → 必须靠 `conditionAbsent` |
+| 25 | 用 `incidents` 接口查告警，查出来是空的，以为策略没生效         | 本项目 `GET /v3/projects/{p}/incidents` 会返回空数组，即使刚有事件。用 `gcloud monitoring alerts list`（带 openTime/closeTime）才准。实测靠 `incidents` 一度误判"没告警" |
 
 ## 作品集交付物（跑完补进来）
 
 - [ ] 告警邮件截图（含触发 + 恢复两封）
-- [ ] dashboard 截图（四块面板，磁盘曲线有明显抬升、uptime 有掉 0 再回 1）
+- [ ] dashboard 截图（五块面板，磁盘曲线有明显抬升、uptime 有掉 0 再回 1；再补一张**断档**图：停 Agent 后磁盘线断开而 CPU 线仍在）
 - [ ] `monitoring alerts list` 事件时间线（MTTD 实测：从破坏到告警开了多久）
 - [ ] 「What I broke and how I fixed it」：三轮破坏的现象与定位过程
 - [ ] 一段心得：**练习 6 的 37m26s RTO 里，4m34s 是纯人工决策；练习 7 的告警把「发现」自动化后，这段能压到多少**
@@ -751,9 +1061,10 @@ ssh jump-us 'rpm -qa | grep -i google-cloud-ops; \
 | 文件                                     | 用途                                                                      |
 | -------------------------------------- | ----------------------------------------------------------------------- |
 | `README.md`                            | 本 runbook                                                               |
-| `dashboard.json`                       | 四面板 dashboard（含练习 6 RTO 复盘文字面板），已过 API `--validate-only`                |
+| `dashboard.json`                       | 五面板 dashboard（含练习 6 RTO 复盘文字面板 + 通过比例 + 内容不匹配比例），已过 API `--validate-only`                |
 | `alert-disk.json`                      | 磁盘 >75% 告警策略（对齐 Ops Agent 口径，见 4.1 步实测说明）                              |
 | `alert-uptime.json`                    | Uptime 拨测失败告警策略                                                         |
+| `alert-absent.json`                    | **缺数据告警**（`conditionAbsent`）：磁盘指标 5 分钟无数据 / 拨测结果 10 分钟无数据，见 4.4 |
 | `notification-channel.json`            | 邮件通道模板（`__EMAIL__` 用 sed 替换）                                            |
 | `alert-uptime-production.json`         | 主力 n8n 拨测失败告警（`prod-` 常驻，filter 锁 `cloudworkflowdone.com`）              |
 | `dashboard-production.json`            | 生产机常驻 dashboard（四面板：系统指标 / 容器数+拨测 / 纳管说明 / 负载）                          |

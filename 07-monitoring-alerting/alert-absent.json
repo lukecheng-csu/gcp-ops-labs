@@ -1,0 +1,43 @@
+{
+  "displayName": "lab07-metrics-absent",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "VM 磁盘指标 5 分钟无数据（采集链路断供）",
+      "conditionAbsent": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"agent.googleapis.com/disk/percent_used\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_COUNT",
+            "crossSeriesReducer": "REDUCE_COUNT",
+            "groupByFields": ["resource.label.*"]
+          }
+        ],
+        "trigger": { "count": 1 },
+        "duration": "300s"
+      }
+    },
+    {
+      "displayName": "拨测结果 10 分钟无数据（拨测被停用/配置丢失）",
+      "conditionAbsent": {
+        "filter": "resource.type = \"uptime_url\" AND resource.labels.host = \"storage.googleapis.com\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "600s",
+            "perSeriesAligner": "ALIGN_COUNT",
+            "crossSeriesReducer": "REDUCE_COUNT",
+            "groupByFields": ["resource.label.*"]
+          }
+        ],
+        "trigger": { "count": 1 },
+        "duration": "600s"
+      }
+    }
+  ],
+  "alertStrategy": { "autoClose": "1800s" },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "## 监控盲区：没有数据 ≠ 一切正常\n\n阈值告警只在「有数据点」时评估。指标彻底停写（Ops Agent 挂了、采集进程卡死、\n拨测配置被删）时，序列直接消失，没有任何点可比，**阈值条件不会被评估，告警不会响**。\n\n2026-11-09 实测踩过：dd 慢灌把采集进程拖死，磁盘/CPU/内存三类指标同时断供，\n阈值降到多低都不触发。\n\n这类故障要用 `conditionAbsent`（缺数据条件）单独配一条策略：\n`duration` 内该 filter 没有任何序列 → 直接告警。\n\n本策略两条：磁盘指标 5 分钟无数据 / 拨测结果 10 分钟无数据。"
+  }
+}
