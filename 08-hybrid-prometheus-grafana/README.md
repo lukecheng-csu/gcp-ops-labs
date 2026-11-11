@@ -205,14 +205,19 @@ ssh -o ConnectTimeout=5 jump-us 'echo OK'
 本次启动 boot 日志完整、ping 0% 丢包、腾讯云 agent 日志无重启指令。同样的硬件与网络，重启后全好
 → 不是宿主机 / 网络 / 配额问题。
 
-> **定时炸弹还没拆**：`dnf-makecache.timer` 仍然 `active` + `enabled`，下次触发约 **12:16**。
-> 2GB 无 swap 的机器每小时跑一次能吃 750MB 的 `dnf makecache`，随时可能重演。
-> 建议（**尚未执行，等用户拍板**）：
-> `systemctl disable --now dnf-makecache.timer`（只是不预生成包缓存，`dnf install` 时自动拉，
-> 不影响功能、可逆）+ 加 1GB swap 兜底；或直接在控制台升配到 4GB。
+> **定时炸弹已拆一半（11:46 用户执行、11:48 复核）**：用户已跑
+> `systemctl disable --now dnf-makecache.timer`，复核 `is-enabled=disabled`、`is-active=inactive`、
+> `list-timers` 里已无 dnf 条目、`dnf-makecache.service` 也 inactive，本次启动无 OOM 记录；
+> 外网 `/healthz` 连拨 5 次全 200（0.6~3.3s，body `{"status":"ok"}`），n8n 三容器 Up。
+> 禁用 timer 只是不预生成包缓存，`dnf install` 时会自动拉，不影响功能、可逆。
+>
+> **还差兜底**：`free -h` 仍是 1.9Gi 总量、**Swap = 0B**、available 937Mi。根因是「2GB 无交换」，
+> 掐掉 dnf 只是移走最大的那个内存尖峰，别的尖峰照样可能 OOM。建议补 1GB swap：
+> `fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`，
+> 再把 `/swapfile none swap sw 0 0` 写进 `/etc/fstab`；或控制台升配到 4GB。（**均未执行，用户自己敲**）
 
-**练习要继续开敲**，S7 渲染时加一个开关，临时摘掉那两条 n8n 拨测目标（注意这步在**监控机**上跑，
-要带 `MON` 前缀，别在本地敲）：
+**故障期间继续开敲**用的降级开关（历史记录；截至 11:48 生产机已恢复，**现在按 S7 正常渲染即可，
+不需要 `SKIP_N8N`**）。当时是在**监控机**上跑（要带 `MON` 前缀，别在本地敲）：
 
 ```bash
 MON "cd ~/lab08 && SKIP_N8N=1 GCE_PRIVATE_IP=$GCE_PRIVATE_IP TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP bash scripts/render.sh"
