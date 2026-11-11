@@ -185,8 +185,31 @@ ssh -o ConnectTimeout=5 jump-us 'echo OK'
 | 地域 | 从美国 `us-central1-a` 的 GCE 拨同样全超时 → 不是中国跨境链路问题 |
 
 即：**机器活着、内核还能回包，但用户态进程（sshd / Caddy）拿不到响应**，偶发有一次时间片就回一次
-`{"status":"ok"}`。常见原因是 CPU / 内存被打满、轻量实例 CPU 积分耗尽被限频，或某个代理进程把资源吃光。
-要确诊只能进腾讯云控制台看实例监控 / VNC 跑 `top` —— 外部拨测只能定位到「源站」这一层，再往里够不着。
+`{"status":"ok"}`。外部拨测只能定位到「源站」这一层，再往里必须登机看日志。
+
+#### 补：11:35 登机确诊结果（**机器自身问题，不是腾讯云平台问题**）
+
+机器已在 11:34 冷启动（无正常关机序列），重启后 `/healthz` 连拨 6 次全 200、0.6~1.3 秒，服务已恢复。
+登机查到的完整因果链：
+
+| 时间 / 项目 | 实测 |
+| --- | --- |
+| 09:20:26 | 内核 `invoked oom-killer`，`Out of memory: Killed process 1250129 (dnf)`，`anon-rss=753788kB`；`dnf-makecache.service: Failed with result 'oom-kill'` |
+| 09:20 OOM 现场 RSS | `dnf` 754MB、`n8n` 433MB、`postgres` 137MB、`n8n task-runner` 75MB，再加 caddy / xray / squid / hysteria / 腾讯云 YDService / barad_agent |
+| 内存配置 | **总计 1963MB，Swap = 0**，`/etc/fstab` 无 swap 条目；常驻服务已吃掉约 1GB |
+| 11:01:01 | 每小时的 `dnf makecache` 再次启动，11:01:03 拉 EPEL 元数据后**日志彻底中断**（`journalctl -b -1 --since 11:01:04` = `-- No entries --`），整机冻结 33 分钟 |
+| 11:34:15 | 冷启动，之后一切正常（`load 0.31`、可用内存 958MB、n8n 三容器 Up） |
+
+**平台侧逐项排除**：`cpu.stat` 的 `nr_throttled=0` / `throttled_usec=0`（**不是轻量 CPU 积分限频**）、
+`nf_conntrack_count=192/65536`、iptables `INPUT policy ACCEPT`、无 kernel panic、`/var/crash` 空、
+本次启动 boot 日志完整、ping 0% 丢包、腾讯云 agent 日志无重启指令。同样的硬件与网络，重启后全好
+→ 不是宿主机 / 网络 / 配额问题。
+
+> **定时炸弹还没拆**：`dnf-makecache.timer` 仍然 `active` + `enabled`，下次触发约 **12:16**。
+> 2GB 无 swap 的机器每小时跑一次能吃 750MB 的 `dnf makecache`，随时可能重演。
+> 建议（**尚未执行，等用户拍板**）：
+> `systemctl disable --now dnf-makecache.timer`（只是不预生成包缓存，`dnf install` 时自动拉，
+> 不影响功能、可逆）+ 加 1GB swap 兜底；或直接在控制台升配到 4GB。
 
 **练习要继续开敲**，S7 渲染时加一个开关，临时摘掉那两条 n8n 拨测目标（注意这步在**监控机**上跑，
 要带 `MON` 前缀，别在本地敲）：
