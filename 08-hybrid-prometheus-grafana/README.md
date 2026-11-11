@@ -155,6 +155,58 @@ curl -sS --noproxy '*' -m 10 https://cloudworkflowdone.com/healthz
 
 期望：`OK` 和 `{"status":"ok"}`。后者走 Cloudflare，`cf-cache-status: DYNAMIC`，能真实反映源站死活。
 
+#### S1 附注：n8n `/healthz` 拨不通怎么办（2026-11-11 实测）
+
+最后一条偶尔超时 10 秒、一个字节都不回。**先分清是 Cloudflare 挂了还是源站挂了**，敲这三条：
+
+```bash
+# ① Cloudflare 网络本身（正常 1 秒内 200）
+curl -sS --noproxy '*' -m 8 https://www.cloudflare.com/cdn-cgi/trace | head -3
+
+# ② 绕开 Cloudflare，直连源站公网 IP
+curl -sSk --noproxy '*' -m 8 -o /dev/null -w 'tls=%{time_appconnect} code=%{http_code}\n' \
+  --resolve 'cloudworkflowdone.com:443:43.165.125.114' https://cloudworkflowdone.com/healthz
+
+# ③ 源站 sshd 还在不在
+ssh -o ConnectTimeout=5 jump-us 'echo OK'
+```
+
+**判读**：① 正常、② 连 TLS Server Hello 都等不到、③ 卡在 banner exchange → **源站应用层不干活了**，
+不是练习配错、不是代理、不是 DNS、也不是 `/healthz` 这个接口本身。
+
+2026-11-11 实测证据链（Mac 直连 + 美国 GCE 各拨十余次，结论一致）：
+
+| 现象 | 数据 |
+| --- | --- |
+| CF 边缘 | TLS 握手秒过、证书有效，但请求发出后 0~40 秒零字节（`/` 和 `/healthz` 一样） |
+| CF 网络 | `cdn-cgi/trace` 1.08 秒 200 → CF 本身没坏 |
+| 源站网络层 | ping 0% 丢包（~270ms）、TCP 22/80/443 都能完成三次握手 |
+| 源站应用层 | 22 拿不到 SSH banner、80 拿不到 HTTP 首字节、443 拿不到 TLS Server Hello |
+| 地域 | 从美国 `us-central1-a` 的 GCE 拨同样全超时 → 不是中国跨境链路问题 |
+
+即：**机器活着、内核还能回包，但用户态进程（sshd / Caddy）拿不到响应**，偶发有一次时间片就回一次
+`{"status":"ok"}`。常见原因是 CPU / 内存被打满、轻量实例 CPU 积分耗尽被限频，或某个代理进程把资源吃光。
+要确诊只能进腾讯云控制台看实例监控 / VNC 跑 `top` —— 外部拨测只能定位到「源站」这一层，再往里够不着。
+
+**练习要继续开敲**，S7 渲染时加一个开关，临时摘掉那两条 n8n 拨测目标（注意这步在**监控机**上跑，
+要带 `MON` 前缀，别在本地敲）：
+
+```bash
+MON "cd ~/lab08 && SKIP_N8N=1 GCE_PRIVATE_IP=$GCE_PRIVATE_IP TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP bash scripts/render.sh"
+```
+
+GCS 两条 Web 目标、两台主机指标、6 条告警规则全部照常，S11 三轮破坏-修复不受影响。
+生产机恢复后，重跑不带 `SKIP_N8N` 的渲染并重启 Prometheus 就加回来了：
+
+```bash
+MON "cd ~/lab08 && GCE_PRIVATE_IP=$GCE_PRIVATE_IP TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP bash scripts/render.sh && sudo docker compose restart prometheus"
+```
+
+> **别为了看板好看去掩盖它**：`cf-cache-status: DYNAMIC` 意味着每次都回源，源站一挂拨测立刻红，
+> 这正是黑盒监控该有的样子。尤其不要用 CF 缓存规则 / Worker 把 `/healthz` 改成边缘直接返回
+> `{"status":"ok"}` —— 那会让健康检查假绿，把真故障盖住。也别靠调大 Blackbox 超时来「修」，
+> 超时只是止损，病因在源站。
+
 ### S2 · 开临时监控机
 
 ```bash
@@ -240,6 +292,9 @@ MON "curl -fsS -m 8 http://$TENCENT_PUBLIC_IP:9100/metrics | head -3"
 MON "cd ~/lab08 && GCE_PRIVATE_IP=$GCE_PRIVATE_IP TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP bash scripts/render.sh"
 MON 'cd ~/lab08 && grep -n "10\.\|43\.165" prometheus/prometheus.yml'
 ```
+
+> 若 S1 里 n8n `/healthz` 正拨不通（源站故障），在 `bash scripts/render.sh` 前加 `SKIP_N8N=1`
+> 即可临时摘掉那两条目标，其余照常。完整判读与恢复方法见 **S1 附注**。
 
 ### S8 · 起栈
 
@@ -359,9 +414,12 @@ curl -sS --noproxy '*' -m 8 https://cloudworkflowdone.com/healthz   # {"status":
 G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象已清'
 ```
 
+> 若源站正故障（见 S1 附注），`ssh jump-us` 会卡在 banner、`/healthz` 会超时 —— 那是生产机自己不响应，
+> **不代表归零没做干净**。此时用腾讯云控制台确认 n8n 三容器状态即可，别反复重跑清理脚本。
+
 ---
 
-## 4. 最容易翻车的 14 条
+## 4. 最容易翻车的 15 条
 
 | # | 现象 | 原因 / 修法 |
 | --- | --- | --- |
@@ -379,6 +437,7 @@ G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象�
 | 12 | Alertmanager 日志刷 SMTP 报错 | 默认占位值发不出信是**预期行为**，不影响告警状态；填授权码见 S12 |
 | 13 | 想在生产机上做破坏演练 | 红线：只装只读采集器，不碰 n8n 三容器 / Caddy / 任何配置 |
 | 14 | `lab08-mon` 忘删 | e2-small 按小时计费，练完立刻删；归零清单第 ① 步 |
+| 15 | S1 的 n8n `/healthz` 超时、`0 bytes received` | **源站应用层挂了**，不是配置错。按 S1 附注三条命令定位；要继续开敲用 `SKIP_N8N=1` 渲染，别调超时或让 CF 边缘假返回 `OK` |
 
 ---
 
