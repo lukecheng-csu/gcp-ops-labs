@@ -131,6 +131,16 @@ echo "GCE_PRIVATE_IP=$GCE_PRIVATE_IP  TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP"
 G storage ls gs://lukecheng-static-site/
 ```
 
+> **2026-11-11 开敲前复核（已实测，下面这些值直接可用）**：
+> 练习 7 云上资源已全清 —— 3 条策略（含 `lab07-metrics-absent`）、1 个拨测、1 个看板、
+> `lab07-email` 通道、GCS `health.txt` 全删，`policies / uptime / dashboards / notificationChannels` 四个列表均为空；
+> 靶机 Ops Agent 已卸（可用内存 256→366MB），n8n 三容器照常 Up、9100 空闲、无 `lab07-fill`、
+> 无 `lab08-mon`、无 `lab08-health.txt`。
+> `GCE_PRIVATE_IP=10.128.0.3`、`TENCENT_PUBLIC_IP=43.165.125.114`、`index.html` 存在，
+> 两台机器 Docker 均 29.9.2，`default-allow-internal`（`10.128.0.0/9` TCP 全端口）实存 —— **S6 ② 不用配 GCP 防火墙**。
+> 仓库 `a3aa280` 已推、配置语法与 `render.sh` 实跑均通过、渲染产物已清理。
+> **唯一要手动做的**：S2 拿到 `$MON_IP` 后，去腾讯云轻量控制台加 TCP 9100 白名单（S6 ①）。
+
 ### S1 · 造 Web 应用探针对象
 
 练习 8 用**自己的** `lab08-health.txt`，跟练习 7 的 `health.txt` 互不干扰，清场时各删各的。

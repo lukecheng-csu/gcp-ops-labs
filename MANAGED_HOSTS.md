@@ -1,16 +1,20 @@
 # 被管理机器台账
 
 > 这个仓库里所有「能连上去、能监控」的机器都登记在这。新增机器先补这张表，再写练习材料。
-> 最后核对：**2026-11-09 21:00（清场后）** —— 上一轮混合云纳管验证跑通后已全部拆除，
-> 云上监控资源、专用服务账号、生产机上的 Agent/凭证/采集脚本/定时器都已归零，等待手敲一遍。
-> 机器本身（三容器、Caddy、squid、Hysteria2）全程未动。
+> 最后核对：**2026-11-11 10:25（练习 7 收官清场后）** —— 练习 7 的 A 线 `lab07-*` 已全清
+> （3 条策略含 `lab07-metrics-absent`、1 个拨测、1 个看板、`lab07-email` 通道、GCS `health.txt`），
+> 云上 `policies / uptime / dashboards / notificationChannels` 四项均为空；B 线 `prod-*` 与专用服务账号
+> 在 2026-11-09 归零后一直未重建；生产机上的 Agent/凭证/采集脚本/定时器同样为空。
+> **靶机 `practice-web` 的 Ops Agent 已卸载**（练习 7 装的 2.73.0，卸后可用内存 256→366MB，为练习 8 腾地方），
+> 9100 端口空闲。机器本身（n8n 三容器、Caddy、squid、Hysteria2）全程未动。
+> **下一步：练习 8 手敲**，材料见 `08-hybrid-prometheus-grafana/`，开敲锚点已写进其 S0。
 
 ## 总览
 
 | 别名 | 角色 | 云 / 区域 | 公网 IP | 连接方式 | 监控覆盖 | 到期 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `jump-us` | **主力 n8n + GCP 操作跳板机**（生产） | 腾讯云轻量 / `na-ashburn` / `lhins-js6lgbt` | `43.165.125.114` | `ssh jump-us`（root） | **当前未接（清场）**；目标：日志 + 5 个系统指标 + 外部拨测全进 `lukechengtest`，手敲见 07 README 扩展章 B0~B6 | **2026-11-21 ⚠️** |
-| `practice-web` | 练习靶机（练习 1/2/3/7/8 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent **未装**（练习 7 第 0.3 步装） | 长期（Always Free） |
+| `practice-web` | 练习靶机（练习 1/2/3/7/8 共用） | GCP Compute / `us-central1-a` / e2-micro | `35.194.5.128` | `ssh -i ~/.ssh/google_compute_engine lukecheng@35.194.5.128` | Ops Agent **已卸载**（练习 7 收官清场）；练习 8 改挂只读 `node_exporter :9100` | 长期（Always Free） |
 | `lab08-mon` | **练习 8 临时监控机**（跑 Prometheus / Grafana / Alertmanager / Blackbox） | GCP Compute / `us-central1-a` / **e2-small / 2GB / Debian 12** | 手敲 S2 动态生成 | `ssh -i ~/.ssh/google_compute_engine lukecheng@$MON_IP`（**别用 `gcloud compute ssh`，走 Clash 会卡死**） | 不监控自己为主；是采集与看板平面 | **练完即删，不过夜** |
 
 > **2026-11-10 实测补充**：`practice-web` 是 e2-micro，**总内存 969MB、可用仅 210MB**，
@@ -118,7 +122,7 @@ key 放 `/etc/google/auth/application_default_credentials.json`（`0400 root:roo
 | 规格 | e2-micro / Debian 12 / 20G 根盘（已用 40%）/ Always Free |
 | 公网 IP | `35.194.5.128` |
 | 服务账号 scopes | 含 `monitoring.write` + `logging.write`，装 Ops Agent 不用停机改 scopes |
-| Ops Agent | 未安装（练习 7 第 0 步装） |
+| Ops Agent | **已卸载**（练习 7 装的 2.73.0，2026-11-11 收官清场时移除）；练习 8 只用只读 `node_exporter`，不再需要它 |
 | 80 端口 | 练习 2 遗留的 Caddy，`/` 返 308、HTTPS 报 TLS 错，**不能当拨测目标** |
 | 归属 | 练习 1 的资产，**不要删**；练习 3 的 GCS 桶 `lukecheng-static-site` 同理 |
 

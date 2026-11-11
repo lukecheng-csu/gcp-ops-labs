@@ -9,13 +9,19 @@
 
 ---
 
-## 🟢 当前状态：干净起点（2026-11-09 21:00 清场完毕，等你手敲一遍）
+## 🟢 当前状态：已收官 + 干净起点（2026-11-11 10:25 复清完毕）
+
+> 练习 7 全链路（A 线 + 破坏 3 + 断档告警）已实跑并定稿入库（`a3aa280`），
+> 2026-11-11 再次清场：`lab07-*` 3 条策略 / 1 个拨测 / 1 个看板 / `lab07-email` / `health.txt` 全删，
+> 靶机 Ops Agent 也已卸载（为练习 8 腾内存）。下面这张表是**清场后应看到的空状态**，
+> 复核命令现在跑一遍应当全空。想重敲练习 7 就从下节「手敲一遍速查」开始；
+> 继续往前走是练习 8（[`08-hybrid-prometheus-grafana/`](../08-hybrid-prometheus-grafana/)）。
 
 | 位置                     | 已清空的东西                                                                                                                                                                  | 复核命令                                                                                                                  |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | GCP 项目 `lukechengtest` | dashboard `prod-n8n-overview`、告警 `prod-n8n-health-failed` / `prod-n8n-host-degraded`、拨测 `prod-n8n-health`、服务账号 `hybrid-ops-agent`（含 key 和 IAM 绑定）                       | `gcloud monitoring dashboards list` / `policies list` / `uptime list-configs` / `iam service-accounts list` 全空或只剩默认账号 |
 | 生产机 `jump-us`          | Ops Agent 2.73.0 包与 repo、`/opt/hybrid-metrics`（含 venv）、`hybrid-metrics.{service,timer}`、凭证 `/etc/google/auth/`、`/etc/systemd/system.conf` 的 `DefaultEnvironment` 行、安装脚本 | `rpm -qa \| grep google-cloud-ops` 无、`systemctl list-units --all \| grep -E 'hybrid\|ops-agent'` 无                    |
-| 通知渠道                   | 项目里本来就没有（`lab07-email` / `prod-email` 都未建）                                                                                                                              | REST GET `notificationChannels` = 空                                                                                   |
+| 通知渠道                   | 练习建的 `lab07-email` 已删（2026-11-10 建的 `2894649255550776199`）；`prod-email` 本轮未建                                                                                              | REST GET `notificationChannels` = 空                                                                                   |
 | **没动**                 | `n8n-core` / `n8n-postgres` / `n8n-caddy` 三容器、Caddy、squid、Hysteria2、GCS 桶、`practice-web`                                                                                | `docker ps` 三个都 Up、`/healthz` = `{"status":"ok"}`                                                                     |
 
 > 之前跑通的那轮是**验证方案可行**，已经拆干净；这轮由你从零敲一遍，把每一步的现象亲手认出来。  
