@@ -452,7 +452,7 @@ G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象�
 | # | 现象 | 原因 / 修法 |
 | --- | --- | --- |
 | 1 | 想在 `practice-web` 上直接起栈，容器反复 OOM | **e2-micro 只有 210MB 可用内存**，跑不动。必须用临时 e2-small，或切到最后一节的 Grafana Cloud |
-| 2 | 新窗口 `command not found: G` / `hostname contains invalid characters` | 函数和 IP 变量是窗口临时的，重敲「开工三件事」整段 |
+| 2 | 新窗口 `command not found: G` / `hostname contains invalid characters` / **`ssh: connect to host  port 22: Connection refused`**（host 位置是空的） | `$MON_IP` 展开成了空串：函数和 IP 变量是窗口临时的，且 **`lab08-mon` 可能压根还没创建**（`G compute instances list` 查不到）。重敲「开工三件事」整段 + S2 开机取 `MON_IP`，先 `echo $MON_IP` 确认非空再敲 `MON` |
 | 3 | `gcloud compute ssh` / `scp` 卡死 | 这台 Mac 走 Clash 时 gcloud 的 SSH 通道不通；`MON()` 和 S4 **已统一改成** `ssh -i ~/.ssh/google_compute_engine` 直连，别改回去 |
 | 4 | `docker compose` 报权限 | 脚本加的 docker 组要重新登录才生效，统一用 `sudo docker compose` |
 | 5 | `node-tencent` 一直 DOWN，本机 curl 却通 | 腾讯云轻量防火墙在**控制台**，不是 `firewall-cmd`；白名单源必须填 `$MON_IP/32` |
@@ -466,6 +466,7 @@ G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象�
 | 13 | 想在生产机上做破坏演练 | 红线：只装只读采集器，不碰 n8n 三容器 / Caddy / 任何配置 |
 | 14 | `lab08-mon` 忘删 | e2-small 按小时计费，练完立刻删；归零清单第 ① 步 |
 | 15 | S1 的 n8n `/healthz` 超时、`0 bytes received` | **源站应用层挂了**，不是配置错。按 S1 附注三条命令定位；要继续开敲用 `SKIP_N8N=1` 渲染，别调超时或让 CF 边缘假返回 `OK` |
+| 16 | 照着 S1 附注复制了 `SKIP_N8N=1` 的渲染命令 | 那是 11:35 源站 OOM 时的**降级记录**，11:46 拆弹后 `/healthz` 已恢复；现在按 S7 **正常渲染**（不带 `SKIP_N8N`），否则 n8n 两条拨测目标会被摘掉 |
 
 ---
 
