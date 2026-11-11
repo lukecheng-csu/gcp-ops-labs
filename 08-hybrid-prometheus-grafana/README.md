@@ -300,8 +300,17 @@ ssh jump-us 'curl -fsS -m 5 http://127.0.0.1:9100/metrics | head -3'
 >
 > 用户习惯用截图找入口：在实例详情页左侧找「防火墙」页签，不是「安全组」。
 
-**② GCP：不用配**。2026-11-10 实测 `default-allow-internal` 存在（`10.128.0.0/9`，TCP 全端口放行），
-`practice-web` 内网 IP 是 `10.128.0.3`，配置里用 `GCE_PRIVATE_IP` 就能通。
+**② GCP：VPC 层不用配，但靶机系统防火墙要放行**。VPC 的 `default-allow-internal`（`10.128.0.0/9`
+TCP 全端口）实测存在，这一层够用；但 `practice-web` 上 **UFW 是 active**（默认 deny incoming，
+只放行了 80/443/22/2222），9100 会被系统层 DROP —— 表现为 **ping 通、SSH 通、curl 9100 超时**，
+别冤枉 VPC（2026-11-11 实测踩坑）。放行（只放监控机内网 IP，最小权限）：
+
+```bash
+SSH 'sudo ufw allow from 10.128.0.10 to any port 9100 proto tcp comment "lab08 node-exporter from lab08-mon"'
+```
+
+> 来源填的是 `lab08-mon` 的**内网 IP**（同 VPC 互通走内网，不是公网 IP）；
+> **若 S2 重建过 `lab08-mon`，内网 IP 会变，这条规则要同步改**。
 
 从监控机上同时验证两条路：
 
@@ -456,7 +465,7 @@ G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象�
 | 3 | `gcloud compute ssh` / `scp` 卡死 | 这台 Mac 走 Clash 时 gcloud 的 SSH 通道不通；`MON()` 和 S4 **已统一改成** `ssh -i ~/.ssh/google_compute_engine` 直连，别改回去 |
 | 4 | `docker compose` 报权限 | 脚本加的 docker 组要重新登录才生效，统一用 `sudo docker compose` |
 | 5 | `node-tencent` 一直 DOWN，本机 curl 却通 | 腾讯云轻量防火墙在**控制台**，不是 `firewall-cmd`；白名单源必须填 `$MON_IP/32` |
-| 6 | `node-gce` DOWN | 用**内网 IP**；写成公网 IP 反而要额外配 VPC 防火墙 |
+| 6 | `node-gce` DOWN：ping 通、SSH 通，唯独 curl 9100 超时 | ① 配置里用**内网 IP**；② `practice-web` 的 **UFW** active 默认 deny（VPC 无辜），放行见 S6 ② —— 内网 IP 变了记得同步改规则 |
 | 7 | `blackbox-*` DOWN 或拨到自己 | relabel 三段缺一不可：`__address__` → `__param_target` → `instance` → `blackbox:9115` |
 | 8 | 内容改坏了却不告警 | ① **`BROKEN` 含 `OK` 子串**，别用它，改 `DOWN`（练习 7 同款坑，正则已加严成 `(?m)^OK$`）；② GCS 边缘缓存，上传必须带 `--cache-control='no-store'` 并等 1~2 个 30s 周期 |
 | 9 | 首页 target 一直 404 | 先 `G storage ls gs://lukecheng-static-site/` 看真实对象名，改模板里 `index.html` 那行 |
