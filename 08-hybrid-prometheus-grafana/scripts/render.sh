@@ -9,6 +9,11 @@ cd "$(dirname "$0")/.."
 : "${TENCENT_PUBLIC_IP:?缺 TENCENT_PUBLIC_IP（jump-us 的公网 IP）}"
 ALERT_EMAIL="${ALERT_EMAIL:-lab08@example.com}"
 SMTP_PASSWORD="${SMTP_PASSWORD:-CHANGE_ME}"
+# SMTP 服务器可切换：GCP 封出站 25 端口，163 的 587 又不支持 STARTTLS，
+# 真发信用 QQ SMTP：SMTP_HOST='smtp.qq.com:587' SMTP_REQUIRE_TLS=true ALERT_FROM='xxx@qq.com'
+SMTP_HOST="${SMTP_HOST:-smtp.163.com:25}"
+SMTP_REQUIRE_TLS="${SMTP_REQUIRE_TLS:-false}"
+ALERT_FROM="${ALERT_FROM:-$ALERT_EMAIL}"
 
 python3 - "$GCE_PRIVATE_IP" "$TENCENT_PUBLIC_IP" "$ALERT_EMAIL" "$SMTP_PASSWORD" <<'PY'
 import os, pathlib, re, sys
@@ -23,6 +28,9 @@ repl = {
     "__TENCENT_PUBLIC_IP__": tencent,
     "__ALERT_EMAIL__": email,
     "__SMTP_PASSWORD__": smtp,
+    "__SMTP_HOST__": os.environ.get("SMTP_HOST", "smtp.163.com:25"),
+    "__SMTP_REQUIRE_TLS__": os.environ.get("SMTP_REQUIRE_TLS", "false"),
+    "__ALERT_FROM__": os.environ.get("ALERT_FROM", email),
 }
 for src, dst in pairs:
     text = pathlib.Path(src).read_text(encoding="utf-8")

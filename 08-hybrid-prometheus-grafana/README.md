@@ -480,6 +480,8 @@ G storage ls gs://lukecheng-static-site/ | grep lab08 || echo '练习 8 对象�
 | 14 | `lab08-mon` 忘删 | e2-small 按小时计费，练完立刻删；归零清单第 ① 步 |
 | 15 | S1 的 n8n `/healthz` 超时、`0 bytes received` | **源站应用层挂了**，不是配置错。按 S1 附注三条命令定位；要继续开敲用 `SKIP_N8N=1` 渲染，别调超时或让 CF 边缘假返回 `OK` |
 | 16 | 照着 S1 附注复制了 `SKIP_N8N=1` 的渲染命令 | 那是 11:35 源站 OOM 时的**降级记录**，11:46 拆弹后 `/healthz` 已恢复；现在按 S7 **正常渲染**（不带 `SKIP_N8N`），否则 n8n 两条拨测目标会被摘掉 |
+| 17 | 渲染命令报 `bash: line 1:  ALERT_EMAIL=...: command not found` | 多行命令复制粘贴时**续行符 `\` 后面跟了空格**（转义了空格而不是换行），后半截被当成独立命令，render.sh 没跑。修复：整条命令写成一行再执行，或确保 `\` 紧贴行尾、后面不能有空格 |
+| 18 | 填了授权码、重启了 alertmanager，日志仍刷 `notify retry canceled ... context deadline exceeded` | **GCP 封禁出站 TCP 25**（2026-11-13 实测：163/QQ 的 25 全不通；163 的 587 无 STARTTLS、465 是隐式 TLS 而 Alertmanager 不支持）。出路：QQ SMTP 587（STARTTLS 实测通）——`SMTP_HOST='smtp.qq.com:587' SMTP_REQUIRE_TLS=true ALERT_FROM='<发件@qq.com>' ALERT_EMAIL='<收件@163.com>'` 渲染 + `sudo docker compose restart alertmanager`；QQ 授权码在 QQ 邮箱 设置→账号→POP3/IMAP/SMTP 里生成 |
 
 ---
 
