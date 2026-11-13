@@ -12,3 +12,4 @@ __pycache__/
 08-hybrid-prometheus-grafana/prometheus/prometheus.yml
 08-hybrid-prometheus-grafana/alertmanager/alertmanager.yml
 08-hybrid-prometheus-grafana/.env
+08-hybrid-prometheus-grafana/tmp_render/
