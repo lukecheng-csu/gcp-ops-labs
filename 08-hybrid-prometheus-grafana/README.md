@@ -303,14 +303,18 @@ ssh jump-us 'curl -fsS -m 5 http://127.0.0.1:9100/metrics | head -3'
 **② GCP：VPC 层不用配，但靶机系统防火墙要放行**。VPC 的 `default-allow-internal`（`10.128.0.0/9`
 TCP 全端口）实测存在，这一层够用；但 `practice-web` 上 **UFW 是 active**（默认 deny incoming，
 只放行了 80/443/22/2222），9100 会被系统层 DROP —— 表现为 **ping 通、SSH 通、curl 9100 超时**，
-别冤枉 VPC（2026-11-11 实测踩坑）。放行（只放监控机内网 IP，最小权限）：
+别冤枉 VPC（2026-11-11 实测踩坑）。放行（只放监控机内网 IP，最小权限；**IP 动态取，别照抄上一轮旧值**
+—— 2026-11-13 实测踩坑：照抄了旧的 `10.128.0.10`，规则放行的是不存在的机器，等于白放）：
 
 ```bash
-SSH 'sudo ufw allow from 10.128.0.10 to any port 9100 proto tcp comment "lab08 node-exporter from lab08-mon"'
+MON_INT=$(G compute instances describe lab08-mon --zone=$ZONE --format='value(networkInterfaces[0].networkIP)')
+echo "MON_INT=$MON_INT"   # 核对一遍，再放行
+SSH "sudo ufw allow from $MON_INT to any port 9100 proto tcp comment 'lab08 node-exporter from lab08-mon'"
 ```
 
 > 来源填的是 `lab08-mon` 的**内网 IP**（同 VPC 互通走内网，不是公网 IP）；
-> **若 S2 重建过 `lab08-mon`，内网 IP 会变，这条规则要同步改**。
+> **每次 S2 重建 `lab08-mon` 内网 IP 都会变，重敲时先跑上面第一条动态取值**；
+> 放错 IP 的删法：`sudo ufw delete allow from <旧IP> to any port 9100 proto tcp`。
 
 从监控机上同时验证两条路：
 
