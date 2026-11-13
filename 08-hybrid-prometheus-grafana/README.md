@@ -131,15 +131,15 @@ echo "GCE_PRIVATE_IP=$GCE_PRIVATE_IP  TENCENT_PUBLIC_IP=$TENCENT_PUBLIC_IP"
 G storage ls gs://lukecheng-static-site/
 ```
 
-> **2026-11-11 开敲前复核（已实测，下面这些值直接可用）**：
-> 练习 7 云上资源已全清 —— 3 条策略（含 `lab07-metrics-absent`）、1 个拨测、1 个看板、
-> `lab07-email` 通道、GCS `health.txt` 全删，`policies / uptime / dashboards / notificationChannels` 四个列表均为空；
-> 靶机 Ops Agent 已卸（可用内存 256→366MB），n8n 三容器照常 Up、9100 空闲、无 `lab07-fill`、
-> 无 `lab08-mon`、无 `lab08-health.txt`。
-> `GCE_PRIVATE_IP=10.128.0.3`、`TENCENT_PUBLIC_IP=43.165.125.114`、`index.html` 存在，
-> 两台机器 Docker 均 29.9.2，`default-allow-internal`（`10.128.0.0/9` TCP 全端口）实存 —— **S6 ② 不用配 GCP 防火墙**。
-> 仓库 `a3aa280` 已推、配置语法与 `render.sh` 实跑均通过、渲染产物已清理。
-> **唯一要手动做的**：S2 拿到 `$MON_IP` 后，去腾讯云轻量控制台加 TCP 9100 白名单（S6 ①）。
+> **2026-11-13 重敲前复核（已实测，关键值可直接用）**：
+> GCP 仅剩 `practice-web`（RUNNING，内网 `10.128.0.3` / 公网 `35.194.5.128`），无 `lab08-mon`；
+> 练习 7 + 8 云上资源零残留（policies / dashboards / uptime 三个列表全空，GCS 无 `lab08-health.txt`、
+> `index.html` 在，两台靶机的 node_exporter 容器和 ufw 9100 规则均已清）。
+> 生产机 `43.165.125.114`：dnf timer 禁用 2 天未复发、**已加 1GB swap**（`/swapfile` 已用 ~122MB）、
+> `/healthz` 连拨 3 次 200（0.05~0.06s）、n8n 三容器 Up 2 天 —— **S7 渲染别带 `SKIP_N8N`**。
+> **要手动做的两件**：S2 拿到新 `$MON_IP` 后 ① 腾讯云控制台按**新公网 IP** 配 TCP 9100 白名单
+> （旧的 `34.63.195.173/32` 那条若还在，顺手删掉，已是指向不存在机器的死规则）；
+> ② practice-web 的 ufw 按**新内网 IP** 放行 9100（S6 ② 有现成命令）。
 
 ### S1 · 造 Web 应用探针对象
 
