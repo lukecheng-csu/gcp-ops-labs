@@ -149,3 +149,11 @@ gcloud beta compute backend-buckets update static-site-backend \
 2. 每步先 `plan` 看 diff 再 `apply`；免费红线内的资源名、region、machine_type 别写错。
 3. 交付物按 v2 阶梯的作品集模板：GitHub 仓库（`gcp-ops-labs` 按编号分目录）+ **英文 README + Mermaid 架构图**，「What I broke and how I fixed it」一节写真实经历。
 4. 练习 4 完成后，写一段「手搓（练习 1）vs IaC（练习 4）」差异心得，这是作品集最能体现成长的内容。
+5. **每个练习 README 开头必须有「实验目的」段**（2026-11-17 起，用户明确要求）。四件套缺一不可：
+   - **一句话目的**：这个实验能证明我会什么（不是「学 Cloud Run」这种空话）
+   - **要回答的 3–5 个问题**：为什么做这件事、每个动作背后在验证什么
+   - **验收标准**：可勾选、做到才算过，含「能对外讲清楚的一句话」
+   - **刻意不做**：划边界防跑偏，并说明这个缺口留给后面哪个练习补
+
+   范本见 `09-cloudrun-api/README.md` 的「实验目的」段。开敲前先读这一段，
+   不然敲完只知道「命令跑过了」，说不出「为什么要这么设计」。
