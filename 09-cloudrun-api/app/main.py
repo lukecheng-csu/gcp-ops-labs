@@ -46,8 +46,10 @@ async def validation_error(_: Request, exc: RequestValidationError):
 
 
 # ---------- 路由 ----------
-@app.get("/healthz")
-def healthz():
+# 注意：不要用 /healthz！Cloud Run 的 *.run.app 前端保留了它（以及所有以 z 结尾的路径），
+# 请求到不了容器、直接吃 Google 自己的 404 页。/health 实测可达，2026-11-17 手踩。
+@app.get("/health")
+def health():
     return {"status": "ok", "mode": MODE, "version": VERSION}
 
 

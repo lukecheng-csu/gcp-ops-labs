@@ -101,11 +101,11 @@ echo $URL
 bash scripts/smoke.sh        # 先 export URL=... 见 S5
 ```
 
-期望 6/6 PASS：healthz 200、根信息 200、列表 200、**404 也长成 `{"error":...}`**、
+期望 6/6 PASS：health 200、根信息 200、列表 200、**404 也长成 `{"error":...}`**、
 **非法参数 400 也是统一结构**、**POST 空 title 400 统一结构**。
 
 ```bash
-curl -sS $URL/healthz; echo
+curl -sS $URL/health; echo
 curl -sS $URL/api/tasks/999; echo        # 404 的统一结构长这样
 ```
 
@@ -165,13 +165,13 @@ curl -sS "$URL/api/slow?seconds=3"; echo    # 200
 G run services remove-iam-policy-binding lab09-api --region=$REGION \
   --member=allUsers --role=roles/run.invoker
 sleep 20
-curl -sS -o /dev/null -w '%{http_code}\n' $URL/healthz    # 403
+curl -sS -o /dev/null -w '%{http_code}\n' $URL/health    # 403
 
 # 修复：加回
 G run services add-iam-policy-binding lab09-api --region=$REGION \
   --member=allUsers --role=roles/run.invoker
 sleep 20
-curl -sS -o /dev/null -w '%{http_code}\n' $URL/healthz    # 200
+curl -sS -o /dev/null -w '%{http_code}\n' $URL/health    # 200
 ```
 
 **看点**：IAM 收敛要等十几秒（刚加完就 curl 可能还 403，等一下再判）；
@@ -201,10 +201,11 @@ G artifacts repositories list --location=$REGION
 | 6 | 免费/计费焦虑 | Cloud Run 按请求计费且免费层大；唯一会悄悄计费的是 **AR 仓库存镜像**，归零第 2 步别漏 |
 | 7 | 命令贴过去报 `command not found: G` | 新窗口没粘 S0 开工三件事 |
 | 8 | `smoke.sh` 报 `line 21: want?: unbound variable` | 旧版失败提示里 `$want` 紧贴中文书名号，Mac 自带 bash 3.2 解析出错。已重写为纯 ASCII 提示 + `${var}` 全加花括号，并修复 URL 末尾 `//` 只去一个斜杠的问题（2026-11-17 手敲实测踩到） |
+| 9 | **`/healthz` 返回 Google 的 404 HTML 页（带 logo），容器日志里没这条请求** | **Cloud Run 前端保留路径**：`*.run.app` 会拦 `/healthz` 和所有以 `z` 结尾的路径（`/readyz`、`/livez` 等），请求到不了容器，加不加 `--noproxy` 都一样；加尾斜杠 `/healthz/` 反而能到。**本练习已改用 `/health`**（2026-11-17 手敲实测：Google 官方限制 + Stack Overflow/GitHub 多人踩坑）。判据：`/healthz` 响应是 `text/html`、1568 字节、无 `x-cloud-trace-context`；真容器响应带 `server: Google Frontend` + JSON 体 |
 
 ## 与前后练习的衔接
 
-- 承接练习 3/8：同一个 `healthz`+内容校验套路——练习 8 的 Blackbox 以后可以直接拨这个 API 的 `/healthz`
+- 承接练习 3/8：同一个 `health`+内容校验套路——练习 8 的 Blackbox 以后可以直接拨这个 API 的 `/health`
 - 铺垫练习 10（CI/CD）：本练习的手敲 `builds submit + run deploy` 就是 CI/CD 要自动化的两步；
   练习 10 用 GitHub Actions + Workload Identity 无密钥把这两步串起来
 - 铺垫练习 11（IAM）：S8 ③ 的 `run.invoker` 就是服务级最小权限的入口
@@ -212,7 +213,7 @@ G artifacts repositories list --location=$REGION
 ## 交付物自检（做完在 README 勾掉）
 
 - [ ] `gcloud builds submit` 一条命令出镜像（S4）
-- [ ] Cloud Run URL 外网可达，`/healthz` 200（S5/S6）
+- [ ] Cloud Run URL 外网可达，`/health` 200（S5/S6）
 - [ ] 所有非 2xx 都是 `{"error":{"code","message"}}`（S6 六断言全绿）
 - [ ] 三轮破坏都看到现象、都能定位、都修回来了（S8 ①②③）
 - [ ] `gcloud run services logs read` 会用 severity 过滤（S7）

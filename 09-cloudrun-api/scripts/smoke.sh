@@ -27,7 +27,7 @@ check_get() {  # 名称 期望码 body关键字 路径
 }
 
 printf '== smoke test: %s ==\n' "${URL}"
-check_get healthz          200 '"status":"ok"' /healthz
+check_get health            200 '"status":"ok"' /health
 check_get root-info        200 '"service"'     /
 check_get task-list        200 '"tasks"'       /api/tasks
 check_get 404-shape        404 '"error"'       /api/tasks/999
