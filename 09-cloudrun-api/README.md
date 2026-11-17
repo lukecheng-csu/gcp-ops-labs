@@ -304,6 +304,18 @@ curl -sS -o /dev/null -w '%{http_code}\n' $URL/health    # 200
 **看点**：IAM 收敛要等十几秒（刚加完就 curl 可能还 403，等一下再判）；
 这条就是练习 11（IAM 纵深）的前菜。
 
+### S8 实测记录（2026-11-17，手敲）
+
+| 轮次 | 破坏动作 | 现象 | 硬证据 |
+| --- | --- | --- | --- |
+| ① 环境变量 | `LAB09_MODE=broken` 重新部署（revision `00003-ffj`） | `/api/tasks` 500 且是统一结构；`/health` 仍 200 但 `"mode":"broken"` | `gcloud run revisions describe` 能看到该 revision 的 env 就是 broken；改回 dev 生成 `00004` |
+| ② 超时 | `--timeout=20s`，请求 `seconds=60` | 504，`time` 显示 20.695s 总耗时 | 平台日志 `latency = 20.001043161s`（精确等于超时值）；容器侧**无完成日志** |
+| ③ IAM | 移除 `allUsers → run.invoker` | `/health` 立刻 403 | 该秒只有平台 403 + `The request was not authenticated...`，**没有 uvicorn 行**；加回后立刻出现 `INFO: ... 200 OK` |
+
+> 另有一次 `seconds=70`（默认 60s 超时）的 504，平台记 `latency = 60.000597879s`。
+> 两个数字放在一起就能证明：**耗时几乎精确等于 `--timeout`，误差只在毫秒级连接开销**——
+> 是平台按配置掐的，不是应用代码算出来的。
+
 ## S9 归零（练完不过夜）
 
 ```bash
@@ -341,9 +353,9 @@ G artifacts repositories list --location=$REGION
 
 ## 交付物自检（做完在 README 勾掉）
 
-- [ ] `gcloud builds submit` 一条命令出镜像（S4）
-- [ ] Cloud Run URL 外网可达，`/health` 200（S5/S6）
-- [ ] 所有非 2xx 都是 `{"error":{"code","message"}}`（S6 六断言全绿）
-- [ ] 三轮破坏都看到现象、都能定位、都修回来了（S8 ①②③）
-- [ ] `gcloud run services logs read` 会用 severity 过滤（S7）
+- [x] `gcloud builds submit` 一条命令出镜像（S4）— 2026-11-17 实测 30s SUCCESS
+- [x] Cloud Run URL 外网可达，`/health` 200（S5/S6）— revision `00006-znf`
+- [x] 所有非 2xx 都是 `{"error":{"code","message"}}`（S6 六断言全绿）— 含手敲 6 条 + 201 反向
+- [x] 三轮破坏都看到现象、都能定位、都修回来了（S8 ①②③）— 见上方实测记录
+- [x] `gcloud run services logs read` 会用 severity 过滤（S7）— 参数是 `--log-filter`
 - [ ] 服务 + AR 仓库全删（S9 复核为空）
