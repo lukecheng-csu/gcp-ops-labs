@@ -97,17 +97,69 @@ echo $URL
 
 ## S6 冒烟测试（6 个断言，含统一错误结构）
 
+一键版（脚本就是把这 6 条串起来跑）：
+
 ```bash
 bash scripts/smoke.sh        # 先 export URL=... 见 S5
 ```
 
-期望 6/6 PASS：health 200、根信息 200、列表 200、**404 也长成 `{"error":...}`**、
-**非法参数 400 也是统一结构**、**POST 空 title 400 统一结构**。
+### S6 手敲版：一条一条来，看清每条在验什么
 
+`-w '\n[HTTP %{http_code}]\n'` 的作用：body 打完再单独打一行状态码，一眼看清「内容对不对 + 码对不对」。
+`--noproxy '*'` 是绕开本地代理直连（你的 7897 对 `*.run.app` 常半通，走代理会莫名失败）。
+
+**① 健康检查 —— 容器活着、环境变量生效**
+验：进程起来了，且 `LAB09_MODE=dev` 真的注进容器了（不是代码里写死的默认值）。
 ```bash
-curl -sS $URL/health; echo
-curl -sS $URL/api/tasks/999; echo        # 404 的统一结构长这样
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/health"
+# {"status":"ok","mode":"dev","version":"1.0.0"}   [HTTP 200]
 ```
+
+**② 根信息 —— 服务身份**
+验：请求真的打到了你自己的镜像，不是 Google 的兜底页（兜底页会是 HTML + 带 Google logo）。
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/"
+# {"service":"lab09-api","version":"1.0.0","mode":"dev"}   [HTTP 200]
+```
+
+**③ 列表 —— 正常业务路径**
+验：业务路由通，返回结构是 `{"count":N,"tasks":[...]}`。
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/api/tasks"
+# {"count":2,"tasks":[{"id":1,...},{"id":2,...}]}   [HTTP 200]
+```
+
+**④ 404 —— 错误结构是否统一（本练习的核心）**
+验：不存在的资源**不是** FastAPI 默认的 `{"detail":"Not Found"}`，而是自己的 `{"error":{"code","message"}}`。
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/api/tasks/999"
+# {"error":{"code":404,"message":"任务 999 不存在"}}   [HTTP 404]
+```
+
+**⑤ 参数校验 400 —— 非法输入也走同一套结构**
+验：`seconds=abc` 转数字失败，返回 400，且错误体同样是 `{"error":...}`（不是 `detail` 数组）。
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/api/slow?seconds=abc"
+# {"error":{"code":400,"message":"参数校验失败: Input should be a valid number...(field: ('query','seconds'))"}}   [HTTP 400]
+```
+
+**⑥ POST 空 title —— 写接口的输入校验**
+验：`title` 有 `min_length=1`，空字符串必须 400 且统一结构（不能静默创建空任务）。
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' \
+  -X POST -H 'Content-Type: application/json' -d '{"title":""}' "$URL/api/tasks"
+# {"error":{"code":400,"message":"参数校验失败: String should have at least 1 character...(field: ('body','title'))"}}   [HTTP 400]
+```
+
+**⑥ 的反向证据 —— 合法输入应该建成（可选，跑完记得心里有数）**
+```bash
+curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' \
+  -X POST -H 'Content-Type: application/json' -d '{"title":"手敲验证"}' "$URL/api/tasks"
+# {"created":{"id":3,"title":"手敲验证","done":false}}   [HTTP 201]
+```
+
+> 判读口诀：**2xx 看内容对不对，4xx 看结构统不统一**。① 挂 = 部署/环境变量问题；
+> ② 挂且返回 HTML = 打到了 Google 前端而不是你的容器（对照排错表 9）；③④⑤⑥ 挂 = 代码逻辑问题。
 
 ## S7 看日志（排障的标配入口）
 
