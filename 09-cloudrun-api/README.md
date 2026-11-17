@@ -207,9 +207,41 @@ curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' \
 ## S7 看日志（排障的标配入口）
 
 ```bash
+# 原始流水：平台请求日志 + 容器 stdout 混排
 G run services logs read lab09-api --region=$REGION --limit 20
-G run services logs read lab09-api --region=$REGION --filter='severity>=ERROR' --limit 10
+
+# 只看错误及以上。注意参数名是 --log-filter，不是 --filter（后者会报 unrecognized arguments）
+G run services logs read lab09-api --region=$REGION --log-filter='severity>=ERROR' --limit 10
 ```
+
+**更好用的一条：带状态码和耗时的结构化视图**（排 5xx / 超时首选，一眼看 latency）
+
+```bash
+G logging read 'resource.type="cloud_run_revision"
+  AND resource.labels.service_name="lab09-api"
+  AND httpRequest.status>=400' \
+  --limit=10 --format='table(timestamp,httpRequest.status,httpRequest.latency,httpRequest.requestUrl)'
+```
+
+输出长这样（真实记录）：
+
+```
+TIMESTAMP                    STATUS  LATENCY        REQUEST_URL
+2026-11-17T07:46:51Z         504     60.000597879s  .../api/slow?seconds=70
+2026-11-17T07:40:27Z         400     0.004092879s   .../api/tasks
+```
+
+**读日志的三个要点**
+
+1. 一条请求两行：`GET 200 https://...` 是**平台**记的（带 URL 和状态码），
+   `INFO: 169.254.x.x - "GET / HTTP/1.1" 200` 是**容器里 uvicorn** 记的。只有平台行没有容器行
+   = 请求没进容器（对照排错表 9）。
+2. `169.254.169.126` 是 Cloud Run 内部代理，**不是你**；真实客户端 IP 在 `X-Forwarded-For`。
+3. 时间戳是 **UTC**，北京时间要 +8。
+
+**504 的判据（本练习的关键区分）**：平台日志有 504、`latency` 恰好等于 `--timeout` 的秒数
+（60.000597879s 就是 60s 上限），而容器侧**没有该请求的完成日志**——因为响应还没生成，
+连接已经被网关切了。应用里的 `exception_handler` 根本没机会执行。
 
 ## S8 破坏-修复三轮（不许跳）
 
@@ -225,7 +257,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' $URL/api/tasks     # 500
 curl -sS $URL/api/tasks; echo                                 # 统一错误结构
 
 # 定位：日志里能看到 500 + 我们的中文报错文案
-G run services logs read lab09-api --region=$REGION --filter='severity>=ERROR' --limit 10
+G run services logs read lab09-api --region=$REGION --log-filter='severity>=ERROR' --limit 10
 
 # 修复：改回 dev（重新部署即可，容器/镜像都不用动）
 G run deploy lab09-api --image "us-central1-docker.pkg.dev/$PROJECT/lab09/api:v1" \
@@ -291,13 +323,14 @@ G artifacts repositories list --location=$REGION
 | 1 | build 卡住或 `docker push` 权限错 | 用 `gcloud builds submit`（云端构建+推送一体），别本机 docker build 后手推；本机走 Clash 时 push 私仓常死 |
 | 2 | 部署后 revision 起不来（`Container failed to start`） | 九成是**没监听 $PORT**（Dockerfile 里写死了 8080 之外的端口或用了 exec 形式 CMD 不展开变量）；本模板用 shell 形式 CMD，已避开 |
 | 3 | `--allow-unauthenticated` 后仍 403 | IAM 收敛延迟，等 30 秒再试；还不行看 `G run services get-iam-policy` |
-| 4 | 500 但日志看不出啥 | 用 `--filter='severity>=ERROR'`；FastAPI 的 traceback 在 textPayload 里，搜 `Traceback` |
+| 4 | 500 但日志看不出啥 | 用 `--log-filter='severity>=ERROR'`；FastAPI 的 traceback 在 textPayload 里，搜 `Traceback` |
 | 5 | 请求 504 但应用没崩 | 平台超时（`--timeout`），不是 bug；对照 S8 ② |
 | 6 | 免费/计费焦虑 | Cloud Run 按请求计费且免费层大；唯一会悄悄计费的是 **AR 仓库存镜像**，归零第 2 步别漏 |
 | 7 | 命令贴过去报 `command not found: G` | 新窗口没粘 S0 开工三件事 |
 | 8 | `smoke.sh` 报 `line 21: want?: unbound variable` | 旧版失败提示里 `$want` 紧贴中文书名号，Mac 自带 bash 3.2 解析出错。已重写为纯 ASCII 提示 + `${var}` 全加花括号，并修复 URL 末尾 `//` 只去一个斜杠的问题（2026-11-17 手敲实测踩到） |
 | 9 | **`/healthz` 返回 Google 的 404 HTML 页（带 logo），容器日志里没这条请求** | **Cloud Run 前端保留路径**：`*.run.app` 会拦 `/healthz` 和所有以 `z` 结尾的路径（`/readyz`、`/livez` 等），请求到不了容器，加不加 `--noproxy` 都一样；加尾斜杠 `/healthz/` 反而能到。**本练习已改用 `/health`**（2026-11-17 手敲实测：Google 官方限制 + Stack Overflow/GitHub 多人踩坑）。判据：`/healthz` 响应是 `text/html`、1568 字节、无 `x-cloud-trace-context`；真容器响应带 `server: Google Frontend` + JSON 体 |
 | 10 | **`smoke.sh` 输出 `got HTTP 000000`，但 body 里是正确 JSON** | 两个叠加原因：① 旧版一条断言发两次 curl（一次取 body、一次取 code），本地代理（7897 之类）对 `*.run.app` 半通，第二次被掐断，code 就成了 000；② curl 失败时 `-w '%{http_code}'` 已经输出 `000`，`\|\| printf '000'` 又追加一个，拼成 `000000`。**已重写**：一条断言只发一次请求（body+code 同源）、失败自动 `--noproxy '*'` 直连重试一次、再原样重试一次，curl 原始报错一并打印。另外 bash 3.2 在 `set -u` 下展开**空数组**会报 `extra[@]: unbound variable`，所以脚本里不要用数组拼 curl 参数（2026-11-17 手敲实测踩到） |
+| 11 | `gcloud run services logs read ... --filter=...` 报 `unrecognized arguments: --filter=severity>=ERROR (did you mean '--log-filter'?)` | gcloud 591.0.0 起该子命令的过滤参数改名 **`--log-filter`**（`--filter` 只在 `compute list` 这类资源列表命令上用）。已全文改正。想看「状态码 + 耗时」的结构化视图，用 `gcloud logging read` 配 `--format='table(timestamp,httpRequest.status,httpRequest.latency,httpRequest.requestUrl)'`，比纯文本流水好读（2026-11-17 手敲实测） |
 
 ## 与前后练习的衔接
 
