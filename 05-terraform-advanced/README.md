@@ -3,6 +3,33 @@
 > 练习 4 的三个痛点在这里根治：state 本地易丢（GCS backend + 版本化）、代码不可复用（module）、多环境挤一个 state（workspaces）。
 > 路线见 `ROADMAP.md` 第四节。
 
+## 实验目的（先读这段，再动手）
+
+**一句话**：练习 4 只证明了「一台机器用代码能建出来」；这个练习证明**这套代码能给团队用**——
+state 不丢、能并发、环境隔离，且一份 module 撑起 dev 和 prod。
+
+**这个实验要回答的 3 个问题**
+
+1. state 放 GCS 之后，两个人同时 `apply` 会怎样？**state lock** 是谁加的、报错长什么样？
+   为什么本地 state 时代这个问题根本暴露不出来？
+2. `workspace` 到底隔离了什么？dev 和 prod 的 state 分别落在 GCS 的哪个前缀下，
+   VM 名字为什么自动带上环境前缀？
+3. module 的输入输出边界怎么划？哪些东西该做成变量（region / 机型 / 前缀），
+   哪些必须写死在 module 里？
+
+**验收标准（做到才算过）**
+
+- [ ] dev / prod 两套环境用**同一份 module** 部署成功，`gcloud storage ls` 能看到两个独立 state 文件
+- [ ] 两个终端同时 `apply`，亲眼看到 lock 冲突的报错（而不是两个人都默默写坏 state）
+- [ ] `workspace list` 三条（default/dev/prod），切换后 `plan` 不会互相污染
+- [ ] 练完把其中一台（prod 或 dev）拆掉——两台 e2-micro 已超出免费额度
+
+**刻意不做（划边界，防跑偏）**
+
+- 不引 Terragrunt / Atlantis / Spacelift 这类上层工具：先把原生机制吃透
+- 不做 CI 自动 `apply`：那是练习 10（GitHub Actions）的事
+- 不做「一键销毁全部环境」的脚本：手工 `workspace select` 再 `destroy`，过程本身就是理解
+
 ## 前置（已完成）
 
 - state 桶 `gs://lukechengtest-tfstate`（US 多区域 + 版本化 + 7 天软删除）已建好。

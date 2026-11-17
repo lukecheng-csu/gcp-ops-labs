@@ -4,6 +4,31 @@
 
 This is a practice lab, not a production incident, but every step was performed on a real Compute Engine VM.
 
+## Purpose (实验目的)
+
+**One line:** prove I can recover a Linux box with **zero working SSH** — and reason backwards from
+the symptom to the layer that broke.
+
+**Questions this lab answers**
+
+1. `Connection refused` vs. a silent hang — which layer handled the packet each time?
+   (Refused = nothing listening, service layer. Hang = filtered, firewall layer.)
+2. Two firewalls sit in front of `sshd` (VPC + guest `ufw`). Why does opening only one change nothing?
+3. What has to be prepared *before* the lockout (serial-port metadata + OS password) for the
+   out-of-band path to exist at all?
+
+**Acceptance criteria**
+
+- [ ] Logged into the VM through the serial console using the OS password (no sshd involved)
+- [ ] Located the *effective* config source with `sshd -T` + `grep -rn Port` (main config vs. drop-ins,
+      and caught the first edit that did not actually change the listening port)
+- [ ] SSH restored, and the ~71-minute timeline explained step by step from journal evidence
+
+**Deliberately out of scope**
+
+- No data recovery or OS reinstall — this is an access-layer drill only
+- OS Login / key rotation not covered here (a different recovery path, separate lab)
+
 ## Environment
 
 | Item | Value |

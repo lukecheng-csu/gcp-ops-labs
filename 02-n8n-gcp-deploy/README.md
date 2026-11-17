@@ -12,6 +12,31 @@ The goal was not just "n8n answers on port 443" — it was to build it the way a
 
 Verified end-to-end with a live webhook workflow and a reboot-persistence test (details below).
 
+## Purpose (实验目的)
+
+**One line:** not "n8n answers on 443", but *a deployment I would hand to a small client* — state that
+survives a VM rebuild, containers that come back by themselves, TLS that renews itself, and every layer
+explainable on demand.
+
+**Questions this lab answers**
+
+1. Why must all state (PostgreSQL data, Caddy certificates, n8n binary payloads) live on a **separate
+   data disk mounted by UUID**, instead of the boot disk?
+2. Why is n8n published on `127.0.0.1:5678` only, with Caddy as the sole public face?
+3. What does each knob prevent — `N8N_PROXY_HOPS=2` (rate limiting behind two proxies),
+   `depends_on: condition: service_healthy` (crash loop on first boot), `depends_on` vs. plain start order?
+
+**Acceptance criteria**
+
+- [ ] Public HTTPS URL served by Let's Encrypt, renewed without manual steps
+- [ ] Rebooted the VM: containers come back on their own, data intact (tested)
+- [ ] A real webhook round-trip succeeds through Cloudflare → Caddy → n8n
+
+**Deliberately out of scope**
+
+- Single node by design — no HA, no multi-replica (K8s comes in lab 13)
+- No backup/restore drill (lab 6) and no CI/CD automation (lab 10)
+
 ## Architecture
 
 ```mermaid

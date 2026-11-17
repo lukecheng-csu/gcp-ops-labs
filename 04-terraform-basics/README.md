@@ -3,6 +3,32 @@
 > 目标：`terraform apply` 重建练习 1 的加固 VM（e2-micro + firewall），`destroy` 干净销毁。
 > 详细路线见仓库根目录 `ROADMAP.md` 第三节。
 
+## 实验目的（先读这段，再动手）
+
+**一句话**：把「手搓出来的机器」变成**可重建的代码**，并且看得懂 `plan` 输出的每一个符号——
+重点不是把资源建出来，而是知道它下一秒会被「原地改」还是「销毁重建」。
+
+**这个实验要回答的 3 个问题**
+
+1. `plan` 里的 `~`、`-/+` 分别意味着什么？为什么改 `machine_type` 会动到机器（还要求显式
+   `allow_stopping_for_update`），而有些属性压根不能原地改？
+2. 控制台手动删掉 Terraform 管的资源，`plan` 凭什么能发现？（drift / refresh 机制）
+3. `terraform.tfstate` 丢了是不是就没救了？`terraform import` 到底在做什么？
+
+**验收标准（做到才算过）**
+
+- [ ] `plan` 显示精确 2 to add，`apply` 后用 `goog-terraform-provisioned=true` 标签
+      分清「代码管的」和「手搓的」
+- [ ] 改机型看到 `~ update in-place`，并注意到**临时公网 IP 被回收重分配**这个副作用
+- [ ] 删掉 state 后能用 `import` 把资源一个个接回来，而不是重建
+- [ ] `destroy` 后云上干净，无残留计费资源
+
+**刻意不做（划边界，防跑偏）**
+
+- 不抽 module、不上 remote state：那是练习 5 要根治的三个痛点
+- 不接管生产资源（`practice-web` 仍在跑），只新建带 `tf` 后缀的练习机
+- 不追求「一次写对」，第二轮故意改错、看报错，才是本练习的重点
+
 ## 第一轮：跑通
 
 ```bash
