@@ -202,6 +202,7 @@ G artifacts repositories list --location=$REGION
 | 7 | 命令贴过去报 `command not found: G` | 新窗口没粘 S0 开工三件事 |
 | 8 | `smoke.sh` 报 `line 21: want?: unbound variable` | 旧版失败提示里 `$want` 紧贴中文书名号，Mac 自带 bash 3.2 解析出错。已重写为纯 ASCII 提示 + `${var}` 全加花括号，并修复 URL 末尾 `//` 只去一个斜杠的问题（2026-11-17 手敲实测踩到） |
 | 9 | **`/healthz` 返回 Google 的 404 HTML 页（带 logo），容器日志里没这条请求** | **Cloud Run 前端保留路径**：`*.run.app` 会拦 `/healthz` 和所有以 `z` 结尾的路径（`/readyz`、`/livez` 等），请求到不了容器，加不加 `--noproxy` 都一样；加尾斜杠 `/healthz/` 反而能到。**本练习已改用 `/health`**（2026-11-17 手敲实测：Google 官方限制 + Stack Overflow/GitHub 多人踩坑）。判据：`/healthz` 响应是 `text/html`、1568 字节、无 `x-cloud-trace-context`；真容器响应带 `server: Google Frontend` + JSON 体 |
+| 10 | **`smoke.sh` 输出 `got HTTP 000000`，但 body 里是正确 JSON** | 两个叠加原因：① 旧版一条断言发两次 curl（一次取 body、一次取 code），本地代理（7897 之类）对 `*.run.app` 半通，第二次被掐断，code 就成了 000；② curl 失败时 `-w '%{http_code}'` 已经输出 `000`，`\|\| printf '000'` 又追加一个，拼成 `000000`。**已重写**：一条断言只发一次请求（body+code 同源）、失败自动 `--noproxy '*'` 直连重试一次、再原样重试一次，curl 原始报错一并打印。另外 bash 3.2 在 `set -u` 下展开**空数组**会报 `extra[@]: unbound variable`，所以脚本里不要用数组拼 curl 参数（2026-11-17 手敲实测踩到） |
 
 ## 与前后练习的衔接
 
