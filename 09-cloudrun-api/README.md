@@ -200,6 +200,7 @@ G artifacts repositories list --location=$REGION
 | 5 | 请求 504 但应用没崩 | 平台超时（`--timeout`），不是 bug；对照 S8 ② |
 | 6 | 免费/计费焦虑 | Cloud Run 按请求计费且免费层大；唯一会悄悄计费的是 **AR 仓库存镜像**，归零第 2 步别漏 |
 | 7 | 命令贴过去报 `command not found: G` | 新窗口没粘 S0 开工三件事 |
+| 8 | `smoke.sh` 报 `line 21: want?: unbound variable` | 旧版失败提示里 `$want` 紧贴中文书名号，Mac 自带 bash 3.2 解析出错。已重写为纯 ASCII 提示 + `${var}` 全加花括号，并修复 URL 末尾 `//` 只去一个斜杠的问题（2026-11-17 手敲实测踩到） |
 
 ## 与前后练习的衔接
 
