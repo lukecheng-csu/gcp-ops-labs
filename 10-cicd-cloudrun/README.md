@@ -1,21 +1,21 @@
 # 练习 10：CI/CD —— push 即部署，红了不许上
 
-> 目标：把练习 9 那套「手敲 build + deploy + smoke」变成一条流水线。
-> 代码 push 到 `main` → GitHub Actions 自动构建镜像 → 部署 Cloud Run → 跑 6 条冒烟断言；
+> 目标：把练习 9 那套「手敲 build + deploy + smoke」变成一条流水线。  
+> 代码 push 到 `main` → GitHub Actions 自动构建镜像 → 部署 Cloud Run → 跑 6 条冒烟断言；  
 > 断言不过，流水线红。**认证全程无 JSON 密钥**（Workload Identity Federation）。
 
 ## 实验目的（先读这段，再动手）
 
-**一句话**：证明你能把「部署」从**人的动作**变成**流水线的动作**——不再是人记得敲哪几条命令，
+**一句话**：证明你能把「部署」从**人的动作**变成**流水线的动作**——不再是人记得敲哪几条命令，  
 而是一次 push 触发、失败自动红、凭证不落地。这是 DevOps 岗和运维岗的分水岭。
 
 **这个实验要回答的 4 个问题**
 
-1. **CI 怎么在没有密钥的情况下拿到 GCP 权限？** GitHub 的 OIDC token 怎么换成短期凭证？
+1. **CI 怎么在没有密钥的情况下拿到 GCP 权限？** GitHub 的 OIDC token 怎么换成短期凭证？  
    为什么 WIF 比「下载 SA 的 JSON key 塞进 Secret」安全一个量级（key 会泄漏、不会过期、不好轮换）？
-2. **流水线失败时，线上会怎样？** 构建挂了（镜像没产出）和冒烟挂了（镜像已部署但断言不过）
+2. **流水线失败时，线上会怎样？** 构建挂了（镜像没产出）和冒烟挂了（镜像已部署但断言不过）  
    是两种完全不同的故障面——分别影响不影响正在服务的版本？
-3. **权限给多了会怎样？** 部署 SA 少了 `run.admin` 会卡在哪一步、报什么错？
+3. **权限给多了会怎样？** 部署 SA 少了 `run.admin` 会卡在哪一步、报什么错？  
    给多了（比如 `owner`）又为什么是隐患？
 4. **怎么回滚？** Cloud Run 的 revision 是天然的回滚点，`--to-revisions` 怎么把流量切回上一版？
 
@@ -52,7 +52,7 @@
                     Cloud Run: lab10-api  ◄── ⑤ 冒烟 6 条（门禁）
 ```
 
-**和练习 9 的差别只有一处**：练习 9 是你在终端里敲这 5 步；练习 10 是 runner 替你敲，
+**和练习 9 的差别只有一处**：练习 9 是你在终端里敲这 5 步；练习 10 是 runner 替你敲，  
 而且第 ⑤ 步失败会让整条流水线红。
 
 ## 免费红线
@@ -88,15 +88,15 @@ bash scripts/setup-wif.sh
 
 它会做 7 件事，**每一步都值得你知道在建什么**：
 
-| 步骤 | 建什么 | 为什么 |
-| --- | --- | --- |
-| 1 | 开 4 个 API | `sts` / `iamcredentials` 是 WIF 换凭证必需，不开会报 403 |
-| 2 | SA `lab10-deployer` | 专用身份，别用默认计算 SA（后者权限太大） |
-| 3 | 三个角色：`run.admin` / `iam.serviceAccountUser` / `artifactregistry.writer` | 部署、以运行 SA 身份部署、推镜像——**只给这三条** |
-| 4 | WIF 池 `github-pool` | 存放「外部身份提供方」的容器 |
-| 5 | OIDC provider，带 `--attribute-condition` | **关键安全闸**：只有 `assertion.repository == 你的仓库` 才允许换取凭证 |
-| 6 | `workloadIdentityUser` 绑定到 repo | 把「哪个仓库的 workflow」和「哪个 SA」绑死 |
-| 7 | AR 仓库 `lab10` | 放镜像，按 sha 打 tag |
+| 步骤 | 建什么                                                                     | 为什么                                                 |
+| -- | ----------------------------------------------------------------------- | --------------------------------------------------- |
+| 1  | 开 4 个 API                                                               | `sts` / `iamcredentials` 是 WIF 换凭证必需，不开会报 403       |
+| 2  | SA `lab10-deployer`                                                     | 专用身份，别用默认计算 SA（后者权限太大）                              |
+| 3  | 三个角色：`run.admin` / `iam.serviceAccountUser` / `artifactregistry.writer` | 部署、以运行 SA 身份部署、推镜像——**只给这三条**                       |
+| 4  | WIF 池 `github-pool`                                                     | 存放「外部身份提供方」的容器                                      |
+| 5  | OIDC provider，带 `--attribute-condition`                                 | **关键安全闸**：只有 `assertion.repository == 你的仓库` 才允许换取凭证 |
+| 6  | `workloadIdentityUser` 绑定到 repo                                         | 把「哪个仓库的 workflow」和「哪个 SA」绑死                         |
+| 7  | AR 仓库 `lab10`                                                           | 放镜像，按 sha 打 tag                                     |
 
 脚本最后会打印两个值，长这样：
 
@@ -109,22 +109,58 @@ WIF_SERVICE_ACCOUNT  lab10-deployer@lukechengtest.iam.gserviceaccount.com
 
 仓库页面 → **Settings → Secrets and variables → Actions → New repository secret**：
 
-| Name | Value |
-| --- | --- |
-| `WIF_PROVIDER` | 上面打印的第一行 |
+| Name                  | Value    |
+| --------------------- | -------- |
+| `WIF_PROVIDER`        | 上面打印的第一行 |
 | `WIF_SERVICE_ACCOUNT` | 上面打印的第二行 |
 
-注意：这两个**不是密钥**（provider 名和邮箱都是公开信息），放 Secret 只是图省事；
+注意：这两个**不是密钥**（provider 名和邮箱都是公开信息），放 Secret 只是图省事；  
 真正的安全来自「只有你的仓库能换到凭证」这条 attribute condition。
 
-## S4 触发第一次流水线
+## S4 把 workflow 文件放进仓库（最容易卡住的一步）
 
-workflow 文件已在 `.github/workflows/deploy-lab10.yml`，push 即触发：
+工作流文件在本地 `.github/workflows/deploy-lab10.yml`，**但它不一定能用 `git push` 上去**：
+如果你的 GitHub token（PAT）没勾 `workflow` 权限，GitHub 会直接拒：
+
+```
+refusing to allow a Personal Access Token to create or update workflow
+`.github/workflows/deploy-lab10.yml` without `workflow` scope
+```
+
+这不是网络问题也不是权限没配好，是 GitHub 对「用 API 改 CI 配置」的额外限制。两条路：
+
+**A. 网页粘贴（30 秒，推荐）** —— 网页操作不受 PAT 作用域限制：
+
+```
+https://github.com/<你的用户名>/<仓库名>/new/main?filename=.github%2Fworkflows%2Fdeploy-lab10.yml
+```
+
+打开后文件名已预填 → 把本地文件内容粘进编辑区 → **Commit directly to the `main` branch**。
+
+**B. 给 token 加权限（一劳永逸，以后 CI 文件都能推）**
+
+1. GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → 勾上 **`workflow`** → Update
+2. 清掉 keychain 旧凭据，下次 push 重新输入：
+
+```bash
+printf "protocol=https\nhost=github.com\n" | git credential-osxkeychain erase
+cd ~/gcp-ops-labs && git add .github && git commit -m "ci(lab10): 加入 workflow" && git push
+```
+
+**怎么确认放进去了**：仓库 → Actions 页签。显示 `Get started with GitHub Actions` + `Found 0 workflows`
+= 文件还没进仓库，此时 push 多少次都不会触发。显示 `deploy-lab10` 列表 = 成了。
+
+> 2026-11-18 手踩：卡在这里半小时，一度误以为 `git commit --allow-empty` 能触发。
+> 空提交只在**流水线已存在**时用来重跑，不能创建设置流水线。
+
+## S5 触发第一次流水线
+
+文件进仓库那次 commit 本身就会触发（`paths` 里有 `.github/workflows/deploy-lab10.yml`）。
+之后改代码也能触发，或手动点一次：
 
 ```bash
 cd ~/gcp-ops-labs
-git pull
-git commit --allow-empty -m "ci: 触发 lab10 首次流水线"
+git commit --allow-empty -m "ci: 重跑 lab10 流水线"    # 仅用于重跑，见 S4 末尾提醒
 git push
 ```
 
@@ -138,17 +174,17 @@ git push
 4. `Deploy to Cloud Run` —— 输出新的 revision 名
 5. `Smoke test (部署门禁)` —— 6 条全 PASS 才算绿
 
-## S5 门禁的意义（这次它真会红）
+## S6 门禁的意义（这次它真会红）
 
 冒烟那一步用的是练习 9 同一个脚本，只是它现在**跑在流水线里**：
 
 - 部署成功但 `/api/tasks` 返回 500 → 冒烟 6 条里 5 条 FAIL → 脚本退出码 1 → **整条流水线红**
 - 红了的 run 在 Actions 列表里是 ❌，GitHub 会给你发邮件
 
-这一点要记住：**流水线红不等于线上挂了**，它只是「不允许这次发布被认作成功」。真正的止损动作是
+这一点要记住：**流水线红不等于线上挂了**，它只是「不允许这次发布被认作成功」。真正的止损动作是  
 下一步的回滚。
 
-## S6 破坏-修复三轮（不许跳）
+## S7 破坏-修复三轮（不许跳）
 
 ### ① 撤权限 → deploy 步 403 → 定位在 IAM 不在代码
 
@@ -161,10 +197,10 @@ G projects remove-iam-policy-binding $PROJECT \
 git commit --allow-empty -m "ci: 权限破坏演练" && git push
 ```
 
-**预期**：build + push 都绿（`artifactregistry.writer` 还在），到 `Deploy to Cloud Run` 报
+**预期**：build + push 都绿（`artifactregistry.writer` 还在），到 `Deploy to Cloud Run` 报  
 `PERMISSION_DENIED: Permission 'run.services.update' denied`。
 
-**看点**：错误出现在第 4 步而不是第 1 步——说明**权限是逐步用到的**，不是一开始就全查一遍。
+**看点**：错误出现在第 4 步而不是第 1 步——说明**权限是逐步用到的**，不是一开始就全查一遍。  
 定位方法是看「哪一步开始红」，而不是从头怀疑代码。
 
 ```bash
@@ -184,7 +220,7 @@ git add -A && git commit -m "ci: 依赖破坏演练" && git push
 
 **预期**：`Build image` 步 `pip install` 报 `No matching distribution found`，流水线红。
 
-**看点（这次最重要）**：`gcloud run services describe` 看 revision **没变**、线上 URL 照样 200。
+**看点（这次最重要）**：`gcloud run services describe` 看 revision **没变**、线上 URL 照样 200。  
 因为镜像压根没产出，部署步骤根本没执行——**构建失败是「发布失败」，不是「线上故障」**。
 
 ```bash
@@ -201,7 +237,7 @@ G run revisions list --service=lab10-api --region=$REGION
 # 改完 push，等流水线跑到 Smoke test → 应该红
 ```
 
-**预期**：部署成功（新 revision 已 100% 流量），但冒烟 5 条 FAIL → 流水线红。
+**预期**：部署成功（新 revision 已 100% 流量），但冒烟 5 条 FAIL → 流水线红。  
 这时候线上**真的坏了**（`/api/tasks` 500，`/health` 仍 200）。
 
 回滚有两种，**都练一遍**：
@@ -216,10 +252,10 @@ curl -sS -m 15 --noproxy '*' -w '\n[HTTP %{http_code}]\n' "$URL/api/tasks"
 # 方式 B：把 workflow 改回 dev，重新走一遍流水线（正解，但慢一分钟）
 ```
 
-**看点**：方式 A 是**止血**，方式 B 是**修复**。生产事故里这两步是分开做的：
+**看点**：方式 A 是**止血**，方式 B 是**修复**。生产事故里这两步是分开做的：  
 先止血（回滚流量），再修代码（走正常发布）。
 
-## S7 归零（练完不过夜）
+## S8 归零（练完不过夜）
 
 ```bash
 # 1) 服务与镜像仓库
@@ -240,7 +276,7 @@ G iam service-accounts list --filter='email~lab10'
 
 GitHub 侧：Settings → Secrets 里那两条可以留着（下次练习还要用），也可以删。
 
-**注意**：workflow 文件留在仓库里没关系，但如果你删了 SA，之后任何 push 到
+**注意**：workflow 文件留在仓库里没关系，但如果你删了 SA，之后任何 push 到  
 `10-cicd-cloudrun/**` 都会让流水线红在 Auth 步——这是预期行为，不是坏了。
 
 ## 进阶（可选，面试加分）
@@ -260,13 +296,14 @@ G run services update-traffic lab10-api --region=$REGION --to-latest
 
 ## 翻车清单
 
-| # | 现象 | 原因 / 解法 |
-| --- | --- | --- |
-| 1 | `Auth to GCP (WIF)` 报 `invalid_target` 或 `unauthorized_client` | `WIF_PROVIDER` 填错（少了 `projects/<号>/locations/global/...` 前缀），或 provider 的 attribute-condition 里的仓库名和实际不符 |
-| 2 | Auth 报 `Permission 'iam.serviceAccounts.getAccessToken' denied` | 少了 `workloadIdentityUser` 绑定；检查 `principalSet` 里的仓库名大小写 |
-| 3 | `docker push` 报 `denied: Permission "artifactregistry.repositories.uploadArtifacts" denied` | SA 少了 `artifactregistry.writer` |
-| 4 | deploy 报 `Permission 'run.services.update' denied` | 少了 `run.admin`（破坏 ① 就是这个） |
-| 5 | deploy 报 `Permission 'iam.serviceaccounts.actAs' denied` | 少了 `iam.serviceAccountUser`——部署时要「以运行 SA 身份」创建 revision |
-| 6 | 流水线绿但服务还是旧版本 | 看 deploy 步是否真的执行（`--quiet` 会吞掉确认，但不会吞错误）；确认看的是 `status.latestReadyRevisionName` |
-| 7 | Actions 里根本没有这个 workflow | workflow 必须在**仓库根** `.github/workflows/`，子目录里的不生效 |
-| 8 | push 了但没触发 | `paths` 过滤只匹配 `10-cicd-cloudrun/**` 和 workflow 自身；改别处不会触发，可用 `workflow_dispatch` 手动点 |
+| # | 现象                                                                                          | 原因 / 解法                                                                                                  |
+| - | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 1 | `Auth to GCP (WIF)` 报 `invalid_target` 或 `unauthorized_client`                              | `WIF_PROVIDER` 填错（少了 `projects/<号>/locations/global/...` 前缀），或 provider 的 attribute-condition 里的仓库名和实际不符 |
+| 2 | Auth 报 `Permission 'iam.serviceAccounts.getAccessToken' denied`                             | 少了 `workloadIdentityUser` 绑定；检查 `principalSet` 里的仓库名大小写                                                  |
+| 3 | `docker push` 报 `denied: Permission "artifactregistry.repositories.uploadArtifacts" denied` | SA 少了 `artifactregistry.writer`                                                                          |
+| 4 | deploy 报 `Permission 'run.services.update' denied`                                          | 少了 `run.admin`（破坏 ① 就是这个）                                                                                |
+| 5 | deploy 报 `Permission 'iam.serviceaccounts.actAs' denied`                                    | 少了 `iam.serviceAccountUser`——部署时要「以运行 SA 身份」创建 revision                                                  |
+| 6 | 流水线绿但服务还是旧版本                                                                                | 看 deploy 步是否真的执行（`--quiet` 会吞掉确认，但不会吞错误）；确认看的是 `status.latestReadyRevisionName`                          |
+| 7 | Actions 里显示 `Found 0 workflows` / 根本没有这个 workflow | 两种情况：① 文件还没进仓库（`git push` 被 PAT 的 `workflow` 作用域拒了，文件只在本机）——用网页粘，见 **S4**；② 文件放错位置，必须在**仓库根** `.github/workflows/`，子目录里的不生效 |
+| 8 | push 了但没触发                                                                                  | `paths` 过滤只匹配 `10-cicd-cloudrun/**` 和 workflow 自身；改别处不会触发，可用 `workflow_dispatch` 手动点                     |
+| 9 | `git push` 报 `refusing to allow a Personal Access Token ... without 'workflow' scope` | GitHub 对「用 API 改 CI 配置」的额外限制，与网络/权限配置无关。解法：网页粘（S4 方式 A）或给 PAT 勾 `workflow`（方式 B）。**2026-11-18 手踩，卡了半小时** |
