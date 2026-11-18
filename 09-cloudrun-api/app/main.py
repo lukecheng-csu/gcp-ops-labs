@@ -5,6 +5,7 @@
 - 监听 $PORT（Cloud Run 注入，这是硬约定）
 - LAB09_MODE=broken 时 /api/* 全部 500（破坏-修复第 1 轮的靶子）
 - /api/slow 可控睡眠（破坏-修复第 2 轮超时靶子）
+- /api/eat 可控吃内存（破坏-修复第 2 轮 OOM 靶子）
 """
 import os
 import time
@@ -90,3 +91,16 @@ def slow(seconds: float = 5):
     """可控睡眠端点：破坏-修复第 2 轮用它打超时（上限 300s 防呆）"""
     time.sleep(min(seconds, 300))
     return {"slept": seconds, "note": "慢是有意的，别在生产里这么写"}
+
+
+@app.get("/api/eat")
+def eat(mb: int = 64):
+    """可控吃内存端点：破坏-修复第 2 轮用它撞 --memory 上限（上限 1024MB 防呆）。
+
+    bytearray(n) 会真分配并清零，不是惰性占位——所以能实打实把 RSS 顶上去。
+    256Mi 的实例上请求 mb=512，容器会被 OOM kill，平台返回 503。
+    """
+    n = max(1, min(mb, 1024))
+    blob = bytearray(n * 1024 * 1024)
+    return {"allocated_mb": n, "bytes": len(blob), "note": "故意吃内存，撞 --memory 上限"}
+

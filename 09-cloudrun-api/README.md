@@ -2,7 +2,7 @@
 
 > 目标：把一个自己写的 FastAPI 应用做成镜像 → 推 Artifact Registry → 部署 Cloud Run，
 > 外网一条 URL 直达、无服务器、按请求付费。**统一错误结构**是本练习的代码侧交付物，
-> 三轮破坏-修复是运维侧交付物。
+> 五轮破坏-修复是运维侧交付物（500 / 504 / OOM / 冷启动 / 403）。
 
 ## 实验目的（先读这段，再动手）
 
@@ -27,7 +27,7 @@
 - [ ] 一条 `gcloud builds submit` 在云端出镜像，本机不需要装 Docker
 - [ ] 部署后外网 URL 可达，`/health` 返回 200 且 `"mode"` 反映注入的环境变量
 - [ ] 所有非 2xx 都是 `{"error":{"code","message"}}`（六条断言全绿，含 201 反向证据）
-- [ ] 三轮破坏（env 改错 / 超时 / 撤权限）都看到现象、都能从日志定位、都修回来
+- [ ] 五轮破坏（env 改错 / 超时 / OOM / 冷启动 / 撤权限）都看到现象、都能从日志定位、都修回来
 - [ ] 能说出 504 为什么**不会**进 FastAPI 的异常处理器
 - [ ] 练完全删：Cloud Run 服务 + AR 仓库，无计费残留
 
@@ -243,7 +243,7 @@ TIMESTAMP                    STATUS  LATENCY        REQUEST_URL
 （60.000597879s 就是 60s 上限），而容器侧**没有该请求的完成日志**——因为响应还没生成，
 连接已经被网关切了。应用里的 `exception_handler` 根本没机会执行。
 
-## S8 破坏-修复三轮（不许跳）
+## S8 破坏-修复五轮（不许跳）
 
 ### ① 环境变量改错 → 500 → 日志定位 → 修复
 
@@ -283,7 +283,47 @@ curl -sS "$URL/api/slow?seconds=3"; echo    # 200
 ```
 
 **看点**：504 是 Cloud Run 在平台层掐断的（应用里没写一行超时逻辑）；
-`--timeout` 上限 3600s。顺带观察 `--min-instances=0` 时第一次请求的冷启动延迟。
+`--timeout` 上限 3600s。
+
+### ②b 吃满内存 → OOM → 503（区分「应用崩了」和「平台杀了」）
+
+```bash
+# 破坏：256Mi 的实例上要 512MB，直接把内存顶爆
+curl -sS -m 60 -o /dev/null -w 'HTTP %{http_code}  用时 %{time_total}s\n' \
+  "$URL/api/eat?mb=512"
+
+# 对照：要 8MB 完全没事
+curl -sS "$URL/api/eat?mb=8"; echo
+
+# 定位：看平台给出的死因（这条是关键证据）
+G logging read 'resource.type="cloud_run_revision"
+  AND resource.labels.service_name="lab09-api"
+  AND severity>=ERROR' --limit=10 --format='value(timestamp,textPayload)'
+
+# 修复：调内存到 512Mi（配置问题配置解；如果是代码真漏内存，调内存只是拖延）
+G run services update lab09-api --region=$REGION --memory=512Mi
+curl -sS "$URL/api/eat?mb=512"; echo    # 200
+G run services update lab09-api --region=$REGION --memory=256Mi   # 练完调回去
+```
+
+**看点**：OOM 的表现和 500 完全不同——`500` 是你的代码自己抛的（有统一 error JSON、有 uvicorn 日志行），
+`503` 是容器被平台 kill（**没有** uvicorn 行，日志里是 `Memory limit of 256 MiB exceeded with 5xx MiB used` 这类平台文案）。
+面试常问「你怎么判断是应用问题还是平台问题」，答案就是这个：**看有没有应用侧日志**。
+
+### ②c 冷启动到底多慢（`--min-instances=0` 的代价）
+
+```bash
+# 制造一次冷启动：改个环境变量就会生成新 revision，新 revision 没有热实例
+G run services update lab09-api --region=$REGION --update-env-vars=LAB09_PROBE=cold
+
+# 第一条请求 = 冷启动，第二条 = 热实例，两条一对比就有数
+curl -sS -o /dev/null -w '冷启动 %{time_total}s\n' "$URL/health"
+curl -sS -o /dev/null -w '热实例 %{time_total}s\n' "$URL/health"
+```
+
+**看点**：`min-instances=0` 省钱但每次从零拉容器，看你机器上冷启动是几百毫秒还是几秒；
+这是「免费额度」和「用户体验」的真实取舍。想压掉就 `--min-instances=1`（但**开始按小时计费**，别忘关）。
+
 
 ### ③ 撤公网权限 → 403 → 加回
 
@@ -311,6 +351,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' $URL/health    # 200
 | ① 环境变量 | `LAB09_MODE=broken` 重新部署（revision `00003-ffj`） | `/api/tasks` 500 且是统一结构；`/health` 仍 200 但 `"mode":"broken"` | `gcloud run revisions describe` 能看到该 revision 的 env 就是 broken；改回 dev 生成 `00004` |
 | ② 超时 | `--timeout=20s`，请求 `seconds=60` | 504，`time` 显示 20.695s 总耗时 | 平台日志 `latency = 20.001043161s`（精确等于超时值）；容器侧**无完成日志** |
 | ③ IAM | 移除 `allUsers → run.invoker` | `/health` 立刻 403 | 该秒只有平台 403 + `The request was not authenticated...`，**没有 uvicorn 行**；加回后立刻出现 `INFO: ... 200 OK` |
+| ②b OOM | `--memory=256Mi` 下请求 `/api/eat?mb=512` | **待补测**（2026-11-18 复核发现漏做：代码里原本没有吃内存端点） | 判据：503 + 日志含 `Memory limit of 256 MiB exceeded`，且**无 uvicorn 行** |
+| ②c 冷启动 | 新 revision 首请求 | **待补测** | 判据：首请求耗时 >> 第二请求耗时；`--min-instances=0` 的代价 |
 
 > 另有一次 `seconds=70`（默认 60s 超时）的 504，平台记 `latency = 60.000597879s`。
 > 两个数字放在一起就能证明：**耗时几乎精确等于 `--timeout`，误差只在毫秒级连接开销**——
@@ -356,6 +398,8 @@ G artifacts repositories list --location=$REGION
 - [x] `gcloud builds submit` 一条命令出镜像（S4）— 2026-11-17 实测 30s SUCCESS
 - [x] Cloud Run URL 外网可达，`/health` 200（S5/S6）— revision `00006-znf`
 - [x] 所有非 2xx 都是 `{"error":{"code","message"}}`（S6 六断言全绿）— 含手敲 6 条 + 201 反向
-- [x] 三轮破坏都看到现象、都能定位、都修回来了（S8 ①②③）— 见上方实测记录
+- [x] ①②③ 三轮破坏（500 / 504 / 403）都看到现象、都能定位、都修回来了（S8）— 见上方实测记录
+- [ ] ②b OOM：`/api/eat?mb=512` 在 256Mi 实例上应 503 + 平台死因日志（**待补测**，2026-11-18 发现漏做）
+- [ ] ②c 冷启动耗时：新 revision 首请求 vs 第二请求（**待补测**）
 - [x] `gcloud run services logs read` 会用 severity 过滤（S7）— 参数是 `--log-filter`
-- [ ] 服务 + AR 仓库全删（S9 复核为空）
+- [x] 服务 + AR 仓库全删（S9 复核为空）
