@@ -1,0 +1,92 @@
+name: deploy-lab10
+
+# 练习 10：push 到 main（且改到本练习相关文件）→ 构建 → 部署 → 冒烟门禁
+# 认证方式：Workload Identity Federation，全程无 JSON 密钥
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '10-cicd-cloudrun/**'
+      - '.github/workflows/deploy-lab10.yml'
+  workflow_dispatch:        # 也允许在 Actions 页面手动点一次
+
+env:
+  PROJECT_ID: lukechengtest
+  REGION: us-central1
+  AR_REPO: lab10
+  SERVICE: lab10-api
+  IMAGE: us-central1-docker.pkg.dev/lukechengtest/lab10/api
+
+permissions:
+  contents: read
+  id-token: write           # WIF 必需：允许 workflow 申请 OIDC token
+
+concurrency:
+  group: deploy-lab10
+  cancel-in-progress: false # 部署不并发，排队执行
+
+jobs:
+  build-deploy-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 关键一步：拿 GitHub 的 OIDC token 换 GCP 短期凭证，没有任何长期密钥
+      - name: Auth to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Show identity (排障用：确认换到的是哪个 SA)
+        run: |
+          gcloud auth list --filter=status:ACTIVE --format='value(account)'
+          gcloud config get-value project
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        run: |
+          docker build \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:latest" \
+            10-cicd-cloudrun
+
+      - name: Push image
+        run: docker push --all-tags "${IMAGE}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image "${IMAGE}:${{ github.sha }}" \
+            --region "${REGION}" \
+            --allow-unauthenticated \
+            --set-env-vars=LAB10_MODE=dev \
+            --memory=256Mi --cpu=1 --timeout=60s \
+            --max-instances=2 --min-instances=0 \
+            --quiet
+
+      - name: Smoke test (部署门禁)
+        run: |
+          URL=$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)')
+          echo "smoke target: ${URL}"
+          URL="${URL}" bash 10-cicd-cloudrun/scripts/smoke.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### lab10 流水线结果" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- image: \`${IMAGE}:${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services describe "${SERVICE}" --region "${REGION}" \
+            --format='value(status.latestReadyRevisionName,status.url)' >> "$GITHUB_STEP_SUMMARY" || true
